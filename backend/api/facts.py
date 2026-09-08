@@ -55,10 +55,16 @@ def facts_stats():
         reconciled = conn.execute(
             "SELECT COUNT(*) FROM relationships WHERE relationship_type='reconciled'"
         ).fetchone()[0]
+        canonical_facts = conn.execute("SELECT COUNT(*) FROM canonical_facts").fetchone()[0]
+        multi_doc_facts = conn.execute(
+            "SELECT COUNT(*) FROM canonical_facts WHERE supporting_count > 1"
+        ).fetchone()[0]
 
     return {
         "documents": total_docs,
         "facts": total_facts,
+        "canonical_facts": canonical_facts,
+        "multi_document_facts": multi_doc_facts,
         "corroborated": corroborated,
         "contradictions": contradictions,
         "reconciled": reconciled,
@@ -78,10 +84,42 @@ def get_fact(fact_id: str):
                WHERE e.fact_id=?""",
             (fact_id,),
         ).fetchall()
+        # Confidence breakdown signals
+        corroboration_count = conn.execute(
+            """SELECT COUNT(*) FROM relationships
+               WHERE (source_fact_id=? OR target_fact_id=?)
+               AND relationship_type='corroborated'""",
+            (fact_id, fact_id),
+        ).fetchone()[0]
+        contradiction_count = conn.execute(
+            """SELECT COUNT(*) FROM relationships
+               WHERE (source_fact_id=? OR target_fact_id=?)
+               AND relationship_type='contradiction'""",
+            (fact_id, fact_id),
+        ).fetchone()[0]
+
+    fact_dict = dict(fact)
+    base_confidence = fact_dict["confidence"]
+
+    confidence_breakdown = [
+        {"signal": "Gemini extraction confidence", "value": round(base_confidence, 3),
+         "weight": "base", "positive": base_confidence >= 0.7},
+        {"signal": "Explicit numeric value", "value": 1.0 if fact_dict.get("canonical_value") else 0.0,
+         "weight": "+0.05", "positive": bool(fact_dict.get("canonical_value"))},
+        {"signal": "Period specified", "value": 1.0 if fact_dict.get("period") else 0.0,
+         "weight": "+0.03", "positive": bool(fact_dict.get("period"))},
+        {"signal": f"Corroborated by {corroboration_count} relationship(s)",
+         "value": min(corroboration_count * 0.05, 0.15),
+         "weight": "+0.05 each", "positive": corroboration_count > 0},
+        {"signal": f"Contradicted by {contradiction_count} relationship(s)",
+         "value": contradiction_count * -0.1,
+         "weight": "-0.10 each", "positive": contradiction_count == 0},
+    ]
 
     return FactWithEvidence(
-        **dict(fact),
+        **fact_dict,
         evidence=[EvidenceResponse(**dict(e)) for e in evidence],
+        confidence_breakdown=confidence_breakdown,
     )
 
 

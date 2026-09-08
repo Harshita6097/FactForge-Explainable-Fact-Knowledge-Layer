@@ -1,5 +1,5 @@
 from pydantic import BaseModel, Field
-from typing import Optional
+from typing import Optional, Any
 
 
 class RawExtractedFact(BaseModel):
@@ -38,3 +38,4 @@ class EvidenceResponse(BaseModel):
 
 class FactWithEvidence(FactResponse):
     evidence: list[EvidenceResponse] = []
+    confidence_breakdown: list[dict[str, Any]] = []
