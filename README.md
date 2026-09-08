@@ -244,7 +244,7 @@ Pages are extracted and stored first, then processed in small batches. Batch siz
 
 ## AI Tools Used
 
-- **Google Gemini 2.5 Flash** — fact extraction from page text, relationship explanation generation, knowledge-grounded QA
+- **Google Gemini 3.5 Flash** — fact extraction from page text, relationship explanation generation, knowledge-grounded QA
 - **Google text-embedding-004** — semantic embeddings for FAISS similarity search
 
 All AI calls are minimal and purposeful. Canonicalization, relationship detection, timeline organization, and deduplication are fully deterministic.
