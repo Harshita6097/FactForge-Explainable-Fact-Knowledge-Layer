@@ -6,6 +6,28 @@ from utils.logger import get_logger
 log = get_logger("document_processor")
 
 
+def _extract_tables_as_text(page) -> str:
+    """Extract tables from a page using PyMuPDF's table finder and format as text."""
+    try:
+        tabs = page.find_tables()
+        if not tabs or not tabs.tables:
+            return ""
+        parts = []
+        for table in tabs.tables:
+            rows = table.extract()
+            if not rows:
+                continue
+            # Format: header row + data rows as pipe-separated text
+            formatted = []
+            for row in rows:
+                cells = [str(c).strip() if c is not None else "" for c in row]
+                formatted.append(" | ".join(cells))
+            parts.append("[TABLE]\n" + "\n".join(formatted) + "\n[/TABLE]")
+        return "\n\n".join(parts)
+    except Exception:
+        return ""
+
+
 def extract_pages(file_path: str) -> list[PageContent]:
     """Extract text from every page of a PDF, preserving page numbers."""
     pages: list[PageContent] = []
@@ -15,6 +37,10 @@ def extract_pages(file_path: str) -> list[PageContent]:
         for page_num in range(len(doc)):
             page = doc[page_num]
             text = page.get_text("text").strip()
+            table_text = _extract_tables_as_text(page)
+            # Append table text after regular text so Gemini sees structured data
+            if table_text:
+                text = text + "\n\n" + table_text if text else table_text
             if text:
                 pages.append(PageContent(
                     page_number=page_num + 1,

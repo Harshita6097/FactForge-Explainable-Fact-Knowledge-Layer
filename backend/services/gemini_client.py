@@ -4,6 +4,7 @@ import time
 import google.generativeai as genai
 from utils.config import get_settings
 from utils.logger import get_logger
+from utils.rate_limiter import get_limiter
 
 settings = get_settings()
 log = get_logger("gemini_client")
@@ -29,16 +30,19 @@ def _get_embed_model():
 
 
 def generate_text(prompt: str, temperature: float = 0.1, max_retries: int = 5) -> str:
-    """Call Gemini with exponential backoff on rate limit errors."""
+    """Call Gemini with adaptive rate limiting and exponential backoff on errors."""
     model = _get_model()
+    limiter = get_limiter()
     log.debug("Gemini generate | prompt_len=%d | temp=%.1f", len(prompt), temperature)
     for attempt in range(max_retries):
+        limiter.wait()
         try:
             response = model.generate_content(
                 prompt,
                 generation_config=genai.types.GenerationConfig(temperature=temperature),
             )
-            log.debug("Gemini response | response_len=%d", len(response.text))
+            log.debug("Gemini response | response_len=%d | calls_in_window=%d",
+                      len(response.text), limiter.calls_in_window)
             return response.text.strip()
         except Exception as e:
             err = str(e)
