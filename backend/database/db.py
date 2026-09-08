@@ -93,4 +93,21 @@ def init_db():
                 FOREIGN KEY (source_fact_id) REFERENCES facts(id),
                 FOREIGN KEY (target_fact_id) REFERENCES facts(id)
             );
+
+            CREATE TABLE IF NOT EXISTS chat_sessions (
+                id TEXT PRIMARY KEY,
+                created_at TEXT NOT NULL,
+                title TEXT
+            );
+
+            CREATE TABLE IF NOT EXISTS chat_messages (
+                id TEXT PRIMARY KEY,
+                session_id TEXT NOT NULL,
+                role TEXT NOT NULL,
+                content TEXT NOT NULL,
+                citations TEXT,
+                facts_used INTEGER DEFAULT 0,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY (session_id) REFERENCES chat_sessions(id)
+            );
         """)
