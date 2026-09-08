@@ -1,5 +1,4 @@
 import re
-from typing import Optional
 from database.db import get_db
 from services.gemini_client import get_embedding
 from services.vector_store import search_similar
@@ -9,6 +8,103 @@ log = get_logger("qa_agent")
 
 _TOP_K = 12
 _SIMILARITY_THRESHOLD = 0.65
+
+# Keywords that indicate a meta question about relationships — answer from DB directly
+_META_KEYWORDS = [
+    "contradiction", "contradict", "conflict", "corrobor", "reconcil",
+    "disagree", "inconsisten", "mismatch", "differ", "relationship",
+]
+
+
+def _is_meta_question(question: str) -> bool:
+    q = question.lower()
+    return any(kw in q for kw in _META_KEYWORDS)
+
+
+def _answer_meta_question(question: str) -> dict:
+    """Answer questions about relationships directly from the relationships table."""
+    q = question.lower()
+
+    # Determine which relationship types to fetch
+    if "contradict" in q or "conflict" in q or "inconsisten" in q or "mismatch" in q:
+        types = ("contradiction",)
+        label = "contradictions"
+    elif "corrobor" in q or "agree" in q or "confirm" in q:
+        types = ("corroborated",)
+        label = "corroborations"
+    elif "reconcil" in q:
+        types = ("reconciled",)
+        label = "reconciliations"
+    else:
+        types = ("contradiction", "corroborated", "reconciled")
+        label = "relationships"
+
+    with get_db() as conn:
+        ph = ",".join("?" * len(types))
+        rows = conn.execute(
+            f"""SELECT r.relationship_type, r.explanation, r.confidence,
+                       fa.entity as src_entity, fa.attribute as src_attr,
+                       fa.canonical_value as src_value, fa.period as src_period,
+                       da.original_filename as src_doc, ea.page_number as src_page,
+                       fb.entity as tgt_entity, fb.attribute as tgt_attr,
+                       fb.canonical_value as tgt_value, fb.period as tgt_period,
+                       db.original_filename as tgt_doc, eb.page_number as tgt_page
+                FROM relationships r
+                JOIN facts fa ON r.source_fact_id=fa.id
+                JOIN facts fb ON r.target_fact_id=fb.id
+                JOIN documents da ON fa.document_id=da.id
+                JOIN documents db ON fb.document_id=db.id
+                LEFT JOIN evidence ea ON ea.fact_id=fa.id
+                LEFT JOIN evidence eb ON eb.fact_id=fb.id
+                WHERE r.relationship_type IN ({ph})
+                GROUP BY r.id
+                ORDER BY r.confidence DESC
+                LIMIT 10""",
+            types,
+        ).fetchall()
+
+    rows = [dict(r) for r in rows]
+
+    if not rows:
+        return {
+            "answer": f"No {label} detected across the uploaded documents.",
+            "citations": [], "facts_used": 0, "has_answer": True, "conflicts": [],
+        }
+
+    lines = [f"Found {len(rows)} {label} across the uploaded documents:\n"]
+    citations = []
+    for i, r in enumerate(rows, 1):
+        rel = r['relationship_type'].upper()
+        p_a = f" ({r['src_period']})" if r['src_period'] else ""
+        p_b = f" ({r['tgt_period']})" if r['tgt_period'] else ""
+        lines.append(
+            f"[{i}] {rel} — {r['src_entity']} {r['src_attr']}: "
+            f"{r['src_value']}{p_a} ({r['src_doc']}, p.{r['src_page']}) "
+            f"vs {r['tgt_value']}{p_b} ({r['tgt_doc']}, p.{r['tgt_page']})"
+        )
+        if r['explanation']:
+            lines.append(f"     → {r['explanation']}")
+        citations.append({
+            "fact_id": "",
+            "document_name": r['src_doc'],
+            "page_number": r['src_page'],
+            "snippet": r['explanation'] or "",
+            "entity": r['src_entity'],
+            "attribute": r['src_attr'],
+            "value": r['src_value'] or "",
+        })
+
+    lines.append("\nCITATIONS:")
+    for r in rows:
+        lines.append(f"- {r['src_entity']} {r['src_attr']}: {r['src_value']} — {r['src_doc']}, Page {r['src_page']}")
+
+    return {
+        "answer": "\n".join(lines),
+        "citations": citations,
+        "facts_used": len(rows),
+        "has_answer": True,
+        "conflicts": rows if label == "contradictions" else [],
+    }
 
 
 def _retrieve_relevant_facts(question: str) -> list[dict]:
@@ -155,6 +251,10 @@ def answer_question(question: str) -> dict:
     """
     log.info("QA question: %s", question[:100])
 
+    # Meta questions about relationships answered directly from DB
+    if _is_meta_question(question):
+        return _answer_meta_question(question)
+
     facts = _retrieve_relevant_facts(question)
     log.info("Retrieved %d relevant facts", len(facts))
 
@@ -170,9 +270,6 @@ def answer_question(question: str) -> dict:
     fact_ids = [f["id"] for f in facts]
     conflicts = _get_conflicts_for_facts(fact_ids)
 
-    fact_context = _build_fact_context(facts)
-
-    # Add conflict context to prompt if any exist
     answer = _format_answer(facts, conflicts, question)
 
     citations = _parse_citations(answer, facts)
