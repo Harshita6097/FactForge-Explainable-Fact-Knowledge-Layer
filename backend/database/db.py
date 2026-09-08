@@ -63,6 +63,17 @@ def init_db():
                 FOREIGN KEY (document_id) REFERENCES documents(id)
             );
 
+            CREATE TABLE IF NOT EXISTS document_pages (
+                id TEXT PRIMARY KEY,
+                document_id TEXT NOT NULL,
+                page_number INTEGER NOT NULL,
+                text TEXT NOT NULL,
+                char_count INTEGER DEFAULT 0,
+                processed INTEGER DEFAULT 0,
+                UNIQUE(document_id, page_number),
+                FOREIGN KEY (document_id) REFERENCES documents(id)
+            );
+
             CREATE TABLE IF NOT EXISTS relationships (
                 id TEXT PRIMARY KEY,
                 source_fact_id TEXT NOT NULL,

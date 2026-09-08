@@ -6,6 +6,7 @@ from contextlib import asynccontextmanager
 from utils.config import get_settings
 from database.db import init_db
 from api.health import router as health_router
+from api.documents import router as documents_router
 
 settings = get_settings()
 
@@ -34,6 +35,7 @@ app.add_middleware(
 )
 
 app.include_router(health_router, prefix="/api", tags=["health"])
+app.include_router(documents_router, prefix="/api", tags=["documents"])
 
 
 @app.get("/")
