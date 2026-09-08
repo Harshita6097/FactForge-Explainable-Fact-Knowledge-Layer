@@ -11,6 +11,7 @@ from database.db import get_db
 from models.document import DocumentResponse, ProcessingStatus
 from services.document_processor import extract_pages, get_page_count, is_valid_pdf
 from services.fact_miner import mine_facts_for_document
+from services.relationship_engine import analyze_document_relationships
 from utils.config import get_settings
 from utils.logger import get_logger
 
@@ -71,6 +72,11 @@ def _process_document_background(doc_id: str, file_path: str):
         filename = doc["original_filename"] if doc else "unknown"
         total_facts = mine_facts_for_document(doc_id, filename)
         log.info("Mining complete for %s — %d facts stored", filename, total_facts)
+
+        # Analyze relationships against all existing facts
+        _update_status(doc_id, "analyzing")
+        total_rels = analyze_document_relationships(doc_id)
+        log.info("Relationship analysis complete for %s — %d relationships", filename, total_rels)
         _update_status(doc_id, "completed")
     except Exception as e:
         log.error("Processing failed for document %s: %s", doc_id, e, exc_info=True)

@@ -8,6 +8,14 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Separator } from "@/components/ui/separator";
 import { useFact } from "@/hooks/useFacts";
+import { useFactRelationships } from "@/hooks/useRelationships";
+
+const TYPE_STYLES: Record<string, { badge: string; label: string }> = {
+  corroborated: { badge: "bg-green-100 text-green-800", label: "✓ Corroborated" },
+  contradiction: { badge: "bg-red-100 text-red-800", label: "✗ Contradiction" },
+  reconciled:    { badge: "bg-amber-100 text-amber-800", label: "⟳ Reconciled" },
+  related:       { badge: "bg-blue-100 text-blue-800", label: "~ Related" },
+};
 
 function confidenceVariant(c: number): "default" | "secondary" | "destructive" {
   if (c >= 0.8) return "default";
@@ -19,6 +27,7 @@ export default function FactDetailPage({ params }: { params: Promise<{ id: strin
   const { id } = use(params);
   const router = useRouter();
   const { data: fact, isLoading } = useFact(id);
+  const { data: relationships = [] } = useFactRelationships(id);
 
   if (isLoading) {
     return (
@@ -117,6 +126,43 @@ export default function FactDetailPage({ params }: { params: Promise<{ id: strin
             </Card>
           ))}
         </div>
+        {/* Relationships panel */}
+        {relationships.length > 0 && (
+          <div className="space-y-3">
+            <h2 className="font-semibold text-sm uppercase tracking-wide text-muted-foreground">
+              Relationships ({relationships.length})
+            </h2>
+            {relationships.map((rel: any) => {
+              const other = rel.source_fact_id === id ? rel.target_fact : rel.source_fact;
+              const style = TYPE_STYLES[rel.relationship_type] ?? TYPE_STYLES.related;
+              return (
+                <Card key={rel.id}>
+                  <CardContent className="p-4 space-y-2">
+                    <div className="flex items-center justify-between">
+                      <span className={`text-xs font-semibold px-2 py-0.5 rounded-full ${style.badge}`}>
+                        {style.label}
+                      </span>
+                      <span className="text-xs text-muted-foreground">
+                        {Math.round(rel.confidence * 100)}% confidence
+                      </span>
+                    </div>
+                    {other && (
+                      <div className="text-sm">
+                        <span className="font-medium">{other.entity}</span>
+                        <span className="text-muted-foreground"> · {other.attribute}</span>
+                        <span className="ml-2">{other.canonical_value || other.raw_value}</span>
+                        {other.period && <Badge variant="outline" className="ml-2 text-xs">{other.period}</Badge>}
+                      </div>
+                    )}
+                    {rel.explanation && (
+                      <p className="text-xs text-muted-foreground italic">💡 {rel.explanation}</p>
+                    )}
+                  </CardContent>
+                </Card>
+              );
+            })}
+          </div>
+        )}
       </main>
     </div>
   );
