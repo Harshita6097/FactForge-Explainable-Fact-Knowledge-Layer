@@ -1,8 +1,7 @@
 import re
 from typing import Optional
 from database.db import get_db
-from prompts.chat_prompts import CHAT_SYSTEM_PROMPT
-from services.gemini_client import generate_text, get_embedding
+from services.gemini_client import get_embedding
 from services.vector_store import search_similar
 from utils.logger import get_logger
 
@@ -68,29 +67,31 @@ def _get_conflicts_for_facts(fact_ids: list[str]) -> list[dict]:
     return [dict(r) for r in rels]
 
 
-def _build_fact_context(facts: list[dict]) -> str:
-    """Format retrieved facts into a readable context block for the prompt."""
-    if not facts:
-        return "No relevant facts found in the uploaded documents."
-
-    lines = []
+def _format_answer(facts: list[dict], conflicts: list[dict], question: str) -> str:
+    """Build a structured answer directly from retrieved facts — no LLM."""
+    lines = [f"Based on the uploaded documents, here is what I found for: '{question}'\n"]
     for i, f in enumerate(facts, 1):
         value = f.get("canonical_value") or f.get("raw_value", "")
-        unit = f.get("unit", "") or ""
-        period = f.get("period", "") or ""
+        unit = f.get("unit") or ""
+        period = f.get("period") or ""
         doc = f.get("original_filename", "Unknown")
         page = f.get("page_number", "?")
-        snippet = f.get("snippet", "")
-
-        line = f"[{i}] {f['entity']} — {f['attribute']}: {value} {unit}".strip()
-        if period:
-            line += f" ({period})"
-        line += f"\n    Source: {doc}, Page {page}"
-        if snippet:
-            line += f"\n    Evidence: \"{snippet[:200]}\""
-        lines.append(line)
-
-    return "\n\n".join(lines)
+        period_str = f" ({period})" if period else ""
+        unit_str = f" {unit}" if unit else ""
+        lines.append(f"[{i}] {f['entity']} — {f['attribute']}: {value}{unit_str}{period_str}")
+        lines.append(f"     Source: {doc}, Page {page}")
+    if conflicts:
+        lines.append("\nConflicts / Reconciliations:")
+        for c in conflicts[:3]:
+            lines.append(
+                f"  • {c['src_entity']} {c['src_attr']}: {c['src_value']} ({c['src_period']}, {c['src_doc']}) "
+                f"vs {c['tgt_value']} ({c['tgt_period']}, {c['tgt_doc']}) — {c['relationship_type']}"
+            )
+    lines.append("\nCITATIONS:")
+    for f in facts:
+        value = f.get("canonical_value") or f.get("raw_value", "")
+        lines.append(f"- {f['entity']} {f['attribute']}: {value} — {f.get('original_filename', '')}, Page {f.get('page_number', '?')}")
+    return "\n".join(lines)
 
 
 def _parse_citations(answer: str, facts: list[dict]) -> list[dict]:
@@ -172,32 +173,7 @@ def answer_question(question: str) -> dict:
     fact_context = _build_fact_context(facts)
 
     # Add conflict context to prompt if any exist
-    conflict_context = ""
-    if conflicts:
-        conflict_lines = []
-        for c in conflicts[:5]:
-            conflict_lines.append(
-                f"  - {c['src_entity']} {c['src_attr']}: {c['src_value']} ({c['src_period']}, {c['src_doc']}) "
-                f"vs {c['tgt_value']} ({c['tgt_period']}, {c['tgt_doc']}) — {c['relationship_type']}"
-            )
-        conflict_context = "\n\nKnown conflicts/reconciliations in this data:\n" + "\n".join(conflict_lines)
-
-    prompt = CHAT_SYSTEM_PROMPT.format(
-        fact_context=fact_context + conflict_context,
-        question=question,
-    )
-
-    try:
-        answer = generate_text(prompt, temperature=0.2)
-    except Exception as e:
-        log.error("Gemini QA failed: %s", e)
-        return {
-            "answer": "An error occurred while generating the answer. Please try again.",
-            "citations": [],
-            "facts_used": len(facts),
-            "has_answer": False,
-            "conflicts": [],
-        }
+    answer = _format_answer(facts, conflicts, question)
 
     citations = _parse_citations(answer, facts)
     has_answer = "don't have enough information" not in answer.lower()
