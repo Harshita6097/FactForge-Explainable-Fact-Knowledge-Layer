@@ -12,6 +12,8 @@ from models.document import DocumentResponse, ProcessingStatus
 from services.document_processor import extract_pages, get_page_count, is_valid_pdf
 from services.fact_miner import mine_facts_for_document
 from services.relationship_engine import analyze_document_relationships
+from services.incremental_indexer import is_duplicate_document
+from api.progress import update_progress, clear_progress
 from utils.config import get_settings
 from utils.logger import get_logger
 
@@ -46,12 +48,15 @@ def _update_status(doc_id: str, status: str, page_count: Optional[int] = None):
 
 
 def _process_document_background(doc_id: str, file_path: str):
-    """Background task: extract pages, mine facts, canonicalize."""
+    """Background task: extract pages, mine facts, analyze relationships."""
     try:
         log.info("Starting processing for document %s", doc_id)
+        update_progress(doc_id, "processing")
         _update_status(doc_id, "processing")
+
         pages = extract_pages(file_path)
         _update_status(doc_id, "extracted", len(pages))
+        update_progress(doc_id, "extracted", total=len(pages))
         log.info("Extracted %d pages for document %s", len(pages), doc_id)
 
         with get_db() as conn:
@@ -65,6 +70,8 @@ def _process_document_background(doc_id: str, file_path: str):
             )
 
         _update_status(doc_id, "mining")
+        update_progress(doc_id, "mining", total=len(pages))
+
         with get_db() as conn:
             doc = conn.execute(
                 "SELECT original_filename FROM documents WHERE id=?", (doc_id,)
@@ -73,15 +80,18 @@ def _process_document_background(doc_id: str, file_path: str):
         total_facts = mine_facts_for_document(doc_id, filename)
         log.info("Mining complete for %s — %d facts stored", filename, total_facts)
 
-        # Analyze relationships against all existing facts
         _update_status(doc_id, "analyzing")
+        update_progress(doc_id, "analyzing", total=len(pages), facts=total_facts)
         total_rels = analyze_document_relationships(doc_id)
         log.info("Relationship analysis complete for %s — %d relationships", filename, total_rels)
+
         _update_status(doc_id, "completed")
+        update_progress(doc_id, "completed", total=len(pages), facts=total_facts, relationships=total_rels)
     except Exception as e:
         log.error("Processing failed for document %s: %s", doc_id, e, exc_info=True)
         with get_db() as conn:
             conn.execute("UPDATE documents SET status='failed' WHERE id=?", (doc_id,))
+        update_progress(doc_id, "failed")
         raise e
 
 
@@ -105,6 +115,16 @@ async def upload_document(
         raise HTTPException(status_code=400, detail="Uploaded file is not a valid PDF")
 
     page_count = get_page_count(str(upload_path))
+
+    # Check for duplicate document before processing
+    existing_id = is_duplicate_document(file.filename, page_count)
+    if existing_id:
+        upload_path.unlink(missing_ok=True)
+        log.info("Duplicate upload rejected: %s already exists as %s", file.filename, existing_id)
+        with get_db() as conn:
+            row = conn.execute("SELECT * FROM documents WHERE id=?", (existing_id,)).fetchone()
+        return DocumentResponse(**dict(row))
+
     log.info("Upload received: %s (%d pages)", file.filename, page_count)
     _save_document_record(doc_id, safe_name, file.filename, page_count)
     background_tasks.add_task(_process_document_background, doc_id, str(upload_path))

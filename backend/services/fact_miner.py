@@ -7,13 +7,16 @@ from models.fact import RawExtractedFact
 from prompts.fact_extraction import BATCH_FACT_EXTRACTION_PROMPT
 from services.gemini_client import generate_text, parse_json_response
 from services.canonicalizer import canonicalize_fact, register_attribute
+from services.incremental_indexer import (
+    get_existing_fact_fingerprints,
+    is_fact_duplicate,
+    compute_optimal_batch_size,
+)
 from utils.config import get_settings
 from utils.logger import get_logger
 
 settings = get_settings()
 log = get_logger("fact_miner")
-
-BATCH_SIZE = 3
 
 
 def _build_pages_text(pages: list[dict]) -> str:
@@ -91,12 +94,14 @@ def _store_fact_with_evidence(
 def mine_facts_for_document(document_id: str, filename: str) -> int:
     """
     Extract facts from all unprocessed pages of a document.
-    Processes pages in small batches for memory efficiency.
+    - Uses dynamic batch sizing based on page density.
+    - Skips duplicate facts within the same document.
+    - Only processes pages not yet marked processed=1 (incremental).
     Returns total facts stored.
     """
     with get_db() as conn:
         pages = conn.execute(
-            """SELECT page_number, text FROM document_pages
+            """SELECT page_number, text, char_count FROM document_pages
                WHERE document_id=? AND processed=0
                ORDER BY page_number""",
             (document_id,),
@@ -110,11 +115,20 @@ def mine_facts_for_document(document_id: str, filename: str) -> int:
     total_pages = len(pages)
     total_facts = 0
 
-    log.info("Starting fact mining | doc=%s | pages=%d | batches=%d",
-             filename, total_pages, (total_pages + BATCH_SIZE - 1) // BATCH_SIZE)
+    # Dynamic batch size based on page density
+    batch_size = compute_optimal_batch_size(pages)
+    total_batches = (total_pages + batch_size - 1) // batch_size
 
-    for i in range(0, total_pages, BATCH_SIZE):
-        batch = pages[i: i + BATCH_SIZE]
+    log.info(
+        "Starting fact mining | doc=%s | pages=%d | batch_size=%d | batches=%d",
+        filename, total_pages, batch_size, total_batches,
+    )
+
+    # Load existing fingerprints for deduplication
+    existing_fingerprints = get_existing_fact_fingerprints(document_id)
+
+    for i in range(0, total_pages, batch_size):
+        batch = pages[i: i + batch_size]
         page_range = f"{batch[0]['page_number']}-{batch[-1]['page_number']}"
         log.info("Processing batch pages %s of %s", page_range, filename)
 
@@ -138,7 +152,22 @@ def mine_facts_for_document(document_id: str, filename: str) -> int:
         for fact in facts:
             page_num = fact.page_number or first_page
             try:
+                # Canonicalize first to get the canonical_value for dedup check
+                from services.canonicalizer import canonicalize_fact as _cf
+                canon = _cf(fact.entity, fact.attribute, fact.raw_value, fact.unit, fact.period)
+
+                if is_fact_duplicate(
+                    fact.entity, canon["canonical_attribute"],
+                    canon["canonical_value"], canon["canonical_period"],
+                    existing_fingerprints,
+                ):
+                    log.debug("Skipping duplicate fact: %s.%s", fact.entity, fact.attribute)
+                    continue
+
                 _store_fact_with_evidence(fact, document_id, page_num)
+                # Add to fingerprints so subsequent batches don't re-add
+                fp = f"{fact.entity}|{canon['canonical_attribute']}|{canon['canonical_value']}|{canon['canonical_period']}"
+                existing_fingerprints.add(fp)
                 total_facts += 1
             except Exception as e:
                 log.error("Failed to store fact '%s.%s': %s", fact.entity, fact.attribute, e)

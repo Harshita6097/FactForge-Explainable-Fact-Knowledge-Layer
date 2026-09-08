@@ -7,6 +7,7 @@ from database.db import get_db
 from prompts.relationship_prompts import RELATIONSHIP_EXPLANATION_PROMPT
 from services.gemini_client import generate_text, get_embedding
 from services.vector_store import add_fact_embedding, search_similar
+from services.incremental_indexer import get_new_facts_since_last_analysis
 from utils.logger import get_logger
 
 log = get_logger("relationship_engine")
@@ -193,44 +194,47 @@ def _store_relationship(source_id: str, target_id: str, rel_type: str, explanati
 
 def analyze_document_relationships(document_id: str) -> int:
     """
-    Compare all facts from document_id against all facts from other documents.
-    Uses FAISS for candidate retrieval, then deterministic checks, then Gemini for explanation.
+    Compare only NEW facts (not yet analyzed) from document_id against all
+    existing facts from other documents. Fully incremental — never re-analyzes
+    already-compared pairs.
     Returns count of relationships created.
     """
-    with get_db() as conn:
-        new_facts = conn.execute(
-            "SELECT * FROM facts WHERE document_id=?", (document_id,)
-        ).fetchall()
+    # Only get facts not yet in the relationships table as source
+    new_fact_ids = get_new_facts_since_last_analysis(document_id)
 
-    if not new_facts:
-        log.info("No facts found for document %s", document_id)
+    if not new_fact_ids:
+        log.info("No new facts to analyze for document %s", document_id)
         return 0
+
+    with get_db() as conn:
+        placeholders = ",".join("?" * len(new_fact_ids))
+        new_facts = conn.execute(
+            f"SELECT * FROM facts WHERE id IN ({placeholders})",
+            new_fact_ids,
+        ).fetchall()
 
     new_facts = [dict(f) for f in new_facts]
     total_relationships = 0
 
-    log.info("Analyzing relationships for %d facts in document %s", len(new_facts), document_id)
+    log.info("Analyzing relationships for %d new facts in document %s", len(new_facts), document_id)
 
     for fact in new_facts:
-        # Build embedding text for this fact
         embed_text = f"{fact['entity']} {fact['attribute']} {fact.get('canonical_value') or fact['raw_value']} {fact.get('period') or ''}"
 
         try:
             embedding = get_embedding(embed_text)
         except Exception as e:
             log.warning("Embedding failed for fact %s: %s", fact["id"], e)
-            # Fall back to DB scan without FAISS
             embedding = None
 
-        # Get candidates: FAISS similarity OR full DB scan as fallback
         if embedding:
             candidates_meta = search_similar(embedding, top_k=20, threshold=_SIMILARITY_THRESHOLD)
-            candidate_ids = [c["fact_id"] for c in candidates_meta if c["fact_id"] != fact["id"]]
-
-            # Also add embedding to index for future comparisons
+            candidate_ids = [
+                c["fact_id"] for c in candidates_meta
+                if c["fact_id"] != fact["id"]
+            ]
             add_fact_embedding(fact["id"], fact["entity"], fact["attribute"], fact.get("period"), embedding)
         else:
-            # Fallback: get facts with same attribute from other documents
             with get_db() as conn:
                 rows = conn.execute(
                     """SELECT id FROM facts
@@ -243,7 +247,6 @@ def analyze_document_relationships(document_id: str) -> int:
         if not candidate_ids:
             continue
 
-        # Load candidate facts with evidence
         with get_db() as conn:
             for cand_id in candidate_ids:
                 fact_a = _get_fact_with_evidence(fact["id"], conn)

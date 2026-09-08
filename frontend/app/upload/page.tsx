@@ -1,12 +1,13 @@
 "use client";
 
 import { useCallback, useState } from "react";
-import { useRouter } from "next/navigation";
 import { motion, AnimatePresence } from "framer-motion";
 import { Navbar } from "@/components/navbar";
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
 import { Badge } from "@/components/ui/badge";
+import { Separator } from "@/components/ui/separator";
+import { ProcessingCard } from "@/components/processing-card";
 import { uploadDocument } from "@/lib/api/documents";
 import { useDocuments, useDeleteDocument } from "@/hooks/useDocuments";
 import { Document } from "@/types";
@@ -20,30 +21,33 @@ interface UploadItem {
   docId?: string;
 }
 
-const statusColor: Record<Document["status"], string> = {
-  pending: "secondary",
+const STATUS_VARIANT: Record<string, "default" | "secondary" | "destructive"> = {
+  pending:    "secondary",
   processing: "secondary",
-  extracted: "secondary",
-  completed: "default",
-  failed: "destructive",
-} as any;
+  extracted:  "secondary",
+  mining:     "secondary",
+  analyzing:  "secondary",
+  completed:  "default",
+  failed:     "destructive",
+};
 
 export default function UploadPage() {
-  const router = useRouter();
   const qc = useQueryClient();
   const { data: documents = [] } = useDocuments();
   const { mutate: deleteDoc } = useDeleteDocument();
   const [items, setItems] = useState<UploadItem[]>([]);
   const [dragging, setDragging] = useState(false);
+  // Track doc IDs that are actively processing for SSE cards
+  const [processingDocIds, setProcessingDocIds] = useState<{ id: string; name: string }[]>([]);
 
   const addFiles = (files: FileList | File[]) => {
     const pdfs = Array.from(files).filter((f) => f.name.toLowerCase().endsWith(".pdf"));
     if (!pdfs.length) return;
+    const offset = items.length;
     setItems((prev) => [
       ...prev,
       ...pdfs.map((f) => ({ file: f, progress: 0, status: "queued" as const })),
     ]);
-    const offset = items.length;
     pdfs.forEach((f, i) => startUpload(f, offset + i));
   };
 
@@ -62,6 +66,8 @@ export default function UploadPage() {
           i === index ? { ...it, status: "done", progress: 100, docId: doc.id } : it
         )
       );
+      // Add to live processing view
+      setProcessingDocIds((prev) => [...prev, { id: doc.id, name: file.name }]);
       qc.invalidateQueries({ queryKey: ["documents"] });
     } catch (e: any) {
       setItems((prev) =>
@@ -78,6 +84,11 @@ export default function UploadPage() {
     addFiles(e.dataTransfer.files);
   }, []);
 
+  // Separate completed docs from in-progress ones
+  const completedDocs = documents.filter(
+    (d) => !processingDocIds.find((p) => p.id === d.id)
+  );
+
   return (
     <div className="min-h-screen flex flex-col">
       <Navbar />
@@ -85,7 +96,7 @@ export default function UploadPage() {
         <div>
           <h1 className="text-2xl font-bold">Upload PDFs</h1>
           <p className="text-muted-foreground text-sm mt-1">
-            Drop one or multiple PDFs. Each will be processed automatically.
+            Drop one or multiple PDFs. Processing starts automatically.
           </p>
         </div>
 
@@ -108,22 +119,23 @@ export default function UploadPage() {
           />
           <div className="text-4xl mb-3">📄</div>
           <p className="font-medium">Drag & drop PDFs here</p>
-          <p className="text-sm text-muted-foreground mt-1">or click to browse</p>
+          <p className="text-sm text-muted-foreground mt-1">or click to browse · multiple files supported</p>
         </div>
 
-        {/* Upload queue */}
+        {/* Upload transfer progress */}
         <AnimatePresence>
-          {items.map((item, i) => (
+          {items.filter((it) => it.status !== "done").map((item, i) => (
             <motion.div
               key={i}
               initial={{ opacity: 0, y: 8 }}
               animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0 }}
               className="border rounded-lg p-4 space-y-2"
             >
               <div className="flex items-center justify-between">
                 <span className="text-sm font-medium truncate max-w-xs">{item.file.name}</span>
-                <Badge variant={item.status === "error" ? "destructive" : item.status === "done" ? "default" : "secondary"}>
-                  {item.status}
+                <Badge variant={item.status === "error" ? "destructive" : "secondary"}>
+                  {item.status === "uploading" ? `${item.progress}%` : item.status}
                 </Badge>
               </div>
               {item.status === "uploading" && <Progress value={item.progress} className="h-1.5" />}
@@ -134,13 +146,26 @@ export default function UploadPage() {
           ))}
         </AnimatePresence>
 
-        {/* Existing documents */}
-        {documents.length > 0 && (
+        {/* Live processing cards (SSE) */}
+        {processingDocIds.length > 0 && (
           <div className="space-y-3">
             <h2 className="font-semibold text-sm text-muted-foreground uppercase tracking-wide">
-              Uploaded Documents
+              Processing
             </h2>
-            {documents.map((doc) => (
+            {processingDocIds.map((d) => (
+              <ProcessingCard key={d.id} docId={d.id} filename={d.name} />
+            ))}
+          </div>
+        )}
+
+        {/* Existing documents */}
+        {completedDocs.length > 0 && (
+          <div className="space-y-3">
+            {processingDocIds.length > 0 && <Separator />}
+            <h2 className="font-semibold text-sm text-muted-foreground uppercase tracking-wide">
+              All Documents
+            </h2>
+            {completedDocs.map((doc) => (
               <motion.div
                 key={doc.id}
                 initial={{ opacity: 0 }}
@@ -154,7 +179,7 @@ export default function UploadPage() {
                   </p>
                 </div>
                 <div className="flex items-center gap-2 shrink-0">
-                  <Badge variant={(statusColor[doc.status] as any) ?? "secondary"}>
+                  <Badge variant={STATUS_VARIANT[doc.status] ?? "secondary"}>
                     {doc.status}
                   </Badge>
                   <Button

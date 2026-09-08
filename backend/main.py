@@ -12,6 +12,7 @@ from api.facts import router as facts_router
 from api.relationships import router as relationships_router
 from api.timeline import router as timeline_router
 from api.chat import router as chat_router
+from api.progress import router as progress_router
 
 settings = get_settings()
 log = get_logger("main")
@@ -49,6 +50,7 @@ app.include_router(facts_router, prefix="/api", tags=["facts"])
 app.include_router(relationships_router, prefix="/api", tags=["relationships"])
 app.include_router(timeline_router, prefix="/api", tags=["timeline"])
 app.include_router(chat_router, prefix="/api", tags=["chat"])
+app.include_router(progress_router, prefix="/api", tags=["progress"])
 
 
 @app.get("/")
