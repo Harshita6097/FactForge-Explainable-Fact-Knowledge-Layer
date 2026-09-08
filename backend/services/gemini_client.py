@@ -1,5 +1,6 @@
 import json
 import re
+import time
 import google.generativeai as genai
 from utils.config import get_settings
 from utils.logger import get_logger
@@ -15,7 +16,7 @@ def _get_model():
     global _model
     if _model is None:
         genai.configure(api_key=settings.gemini_api_key)
-        _model = genai.GenerativeModel("gemini-1.5-flash")
+        _model = genai.GenerativeModel("gemini-3.5-flash")
     return _model
 
 
@@ -27,16 +28,27 @@ def _get_embed_model():
     return _embed_model
 
 
-def generate_text(prompt: str, temperature: float = 0.1) -> str:
-    """Call Gemini and return raw text response."""
+def generate_text(prompt: str, temperature: float = 0.1, max_retries: int = 5) -> str:
+    """Call Gemini with exponential backoff on rate limit errors."""
     model = _get_model()
     log.debug("Gemini generate | prompt_len=%d | temp=%.1f", len(prompt), temperature)
-    response = model.generate_content(
-        prompt,
-        generation_config=genai.types.GenerationConfig(temperature=temperature),
-    )
-    log.debug("Gemini response | response_len=%d", len(response.text))
-    return response.text.strip()
+    for attempt in range(max_retries):
+        try:
+            response = model.generate_content(
+                prompt,
+                generation_config=genai.types.GenerationConfig(temperature=temperature),
+            )
+            log.debug("Gemini response | response_len=%d", len(response.text))
+            return response.text.strip()
+        except Exception as e:
+            err = str(e)
+            is_rate_limit = "429" in err or "quota" in err.lower() or "rate" in err.lower()
+            if is_rate_limit and attempt < max_retries - 1:
+                wait = 2 ** attempt * 5  # 5s, 10s, 20s, 40s
+                log.warning("Gemini rate limit hit, retrying in %ds (attempt %d/%d)", wait, attempt + 1, max_retries)
+                time.sleep(wait)
+            else:
+                raise
 
 
 def parse_json_response(text: str) -> list | dict:
