@@ -207,13 +207,19 @@ def delete_document(doc_id: str):
         ).fetchall()]
         if fact_ids:
             ph = ",".join("?" * len(fact_ids))
-            conn.execute(f"DELETE FROM relationships WHERE source_fact_id IN ({ph}) OR target_fact_id IN ({ph})",
-                         fact_ids + fact_ids)
-            conn.execute(f"DELETE FROM relationship_reasoning WHERE relationship_id NOT IN (SELECT id FROM relationships)")
+            # Delete reasoning BEFORE relationships (FK constraint)
+            rel_ids = [r[0] for r in conn.execute(
+                f"SELECT id FROM relationships WHERE source_fact_id IN ({ph}) OR target_fact_id IN ({ph})",
+                fact_ids + fact_ids,
+            ).fetchall()]
+            if rel_ids:
+                rph = ",".join("?" * len(rel_ids))
+                conn.execute(f"DELETE FROM relationship_reasoning WHERE relationship_id IN ({rph})", rel_ids)
+                conn.execute(f"DELETE FROM relationships WHERE id IN ({rph})", rel_ids)
+        conn.execute("DELETE FROM canonical_facts WHERE source_fact_ids LIKE ?", (f'"%{doc_id}%"',))
         conn.execute("DELETE FROM evidence WHERE document_id=?", (doc_id,))
         conn.execute("DELETE FROM document_pages WHERE document_id=?", (doc_id,))
         conn.execute("DELETE FROM facts WHERE document_id=?", (doc_id,))
-        conn.execute("DELETE FROM canonical_facts WHERE source_fact_ids LIKE ?", (f'"%{doc_id}%"',))
         conn.execute("DELETE FROM documents WHERE id=?", (doc_id,))
 
     file_path = Path(settings.upload_dir) / doc["filename"]
