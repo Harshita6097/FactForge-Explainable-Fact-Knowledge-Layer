@@ -33,6 +33,20 @@ export interface AskResponse {
   citations: ChatCitation[];
   facts_used: number;
   has_answer: boolean;
+  conflicts: ConflictInfo[];
+}
+
+export interface ConflictInfo {
+  relationship_type: string;
+  explanation: string;
+  src_entity: string;
+  src_attr: string;
+  src_value: string;
+  src_period: string;
+  src_doc: string;
+  tgt_value: string;
+  tgt_period: string;
+  tgt_doc: string;
 }
 
 export async function askQuestion(

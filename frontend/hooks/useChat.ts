@@ -28,7 +28,7 @@ export function useDeleteSession() {
 export function useChat() {
   const qc = useQueryClient();
   const [sessionId, setSessionId] = useState<string | null>(null);
-  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [messages, setMessages] = useState<(ChatMessage & { conflicts?: any[] })[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -56,12 +56,13 @@ export function useChat() {
         qc.invalidateQueries({ queryKey: ["chat", "sessions"] });
       }
 
-      const assistantMsg: ChatMessage = {
+      const assistantMsg = {
         id: result.message_id,
-        role: "assistant",
+        role: "assistant" as const,
         content: result.answer,
         citations: result.citations,
         facts_used: result.facts_used,
+        conflicts: result.conflicts ?? [],
         created_at: new Date().toISOString(),
       };
 

@@ -8,7 +8,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Separator } from "@/components/ui/separator";
 import { useRelationships, useRelationshipsSummary } from "@/hooks/useRelationships";
-import { Relationship } from "@/types";
+import { Relationship, ReasoningStep } from "@/types";
 
 const REL_TYPES = ["all", "corroborated", "contradiction", "reconciled", "related"] as const;
 
@@ -18,6 +18,40 @@ const TYPE_STYLES: Record<string, { badge: string; border: string; label: string
   reconciled:    { badge: "bg-amber-100 text-amber-800 dark:bg-amber-900 dark:text-amber-200", border: "border-l-amber-500", label: "⟳ Reconciled" },
   related:       { badge: "bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200", border: "border-l-blue-500", label: "~ Related" },
 };
+
+const STEP_COLORS: Record<string, string> = {
+  match: "bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200",
+  different: "bg-amber-100 text-amber-800 dark:bg-amber-900 dark:text-amber-200",
+  conflict: "bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-200",
+  info: "bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200",
+  corroborated: "bg-green-100 text-green-800",
+  contradiction: "bg-red-100 text-red-800",
+  reconciled: "bg-amber-100 text-amber-800",
+  related: "bg-blue-100 text-blue-800",
+};
+
+function ReasoningChain({ steps }: { steps: ReasoningStep[] }) {
+  return (
+    <div className="space-y-2 pt-1">
+      {steps.map((s) => (
+        <div key={s.step} className="flex items-start gap-3">
+          <div className="w-5 h-5 rounded-full bg-muted flex items-center justify-center text-xs font-bold shrink-0 mt-0.5">
+            {s.step}
+          </div>
+          <div className="flex-1 min-w-0">
+            <div className="flex items-center gap-2 flex-wrap">
+              <span className="text-xs font-semibold">{s.check}</span>
+              <span className={`text-xs px-1.5 py-0.5 rounded font-medium ${STEP_COLORS[s.result] ?? STEP_COLORS.info}`}>
+                {s.result}
+              </span>
+            </div>
+            <p className="text-xs text-muted-foreground mt-0.5">{s.detail}</p>
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
 
 function FactSide({ fact, label }: { fact: any; label: string }) {
   if (!fact) return null;
@@ -43,7 +77,9 @@ function FactSide({ fact, label }: { fact: any; label: string }) {
 }
 
 function RelationshipCard({ rel }: { rel: Relationship }) {
+  const [showReasoning, setShowReasoning] = useState(false);
   const style = TYPE_STYLES[rel.relationship_type] ?? TYPE_STYLES.related;
+  const hasReasoning = rel.reasoning_steps && rel.reasoning_steps.length > 0;
   return (
     <motion.div initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }}>
       <Card className={`border-l-4 ${style.border}`}>
@@ -52,9 +88,19 @@ function RelationshipCard({ rel }: { rel: Relationship }) {
             <span className={`text-xs font-semibold px-2 py-0.5 rounded-full ${style.badge}`}>
               {style.label}
             </span>
-            <span className="text-xs text-muted-foreground">
-              {Math.round(rel.confidence * 100)}% confidence
-            </span>
+            <div className="flex items-center gap-3">
+              <span className="text-xs text-muted-foreground">
+                {Math.round(rel.confidence * 100)}% confidence
+              </span>
+              {hasReasoning && (
+                <button
+                  onClick={() => setShowReasoning((v) => !v)}
+                  className="text-xs text-primary hover:underline"
+                >
+                  {showReasoning ? "Hide reasoning" : "Show reasoning"}
+                </button>
+              )}
+            </div>
           </div>
 
           <div className="flex gap-4 items-start">
@@ -70,11 +116,24 @@ function RelationshipCard({ rel }: { rel: Relationship }) {
           {rel.explanation && (
             <>
               <Separator />
-              <p className="text-xs text-muted-foreground italic">
-                💡 {rel.explanation}
-              </p>
+              <p className="text-xs text-muted-foreground italic">💡 {rel.explanation}</p>
             </>
           )}
+
+          <AnimatePresence>
+            {showReasoning && hasReasoning && (
+              <motion.div
+                initial={{ opacity: 0, height: 0 }}
+                animate={{ opacity: 1, height: "auto" }}
+                exit={{ opacity: 0, height: 0 }}
+                className="overflow-hidden"
+              >
+                <Separator className="my-1" />
+                <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-2">Reasoning Chain</p>
+                <ReasoningChain steps={rel.reasoning_steps!} />
+              </motion.div>
+            )}
+          </AnimatePresence>
         </CardContent>
       </Card>
     </motion.div>

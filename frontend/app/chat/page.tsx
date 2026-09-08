@@ -12,6 +12,30 @@ import { useChat } from "@/hooks/useChat";
 import { ChatMessage, ChatCitation } from "@/lib/api/chat";
 
 // ---------------------------------------------------------------------------
+// Conflict card
+// ---------------------------------------------------------------------------
+function ConflictCard({ conflict }: { conflict: any }) {
+  return (
+    <div className="border border-amber-200 dark:border-amber-800 rounded-md p-3 bg-amber-50/50 dark:bg-amber-950/30 space-y-1">
+      <div className="flex items-center gap-1.5 text-xs font-semibold text-amber-700 dark:text-amber-400">
+        <span>⚠</span>
+        <span className="capitalize">{conflict.relationship_type}</span>
+      </div>
+      <div className="text-xs text-muted-foreground">
+        <span className="font-medium text-foreground">{conflict.src_entity} {conflict.src_attr}:</span>{" "}
+        <span>{conflict.src_value}</span>
+        {conflict.src_period && <span> ({conflict.src_period})</span>}
+        <span className="text-muted-foreground"> in {conflict.src_doc}</span>
+        <span className="mx-1">vs</span>
+        <span>{conflict.tgt_value}</span>
+        {conflict.tgt_period && <span> ({conflict.tgt_period})</span>}
+        <span className="text-muted-foreground"> in {conflict.tgt_doc}</span>
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Citation card
 // ---------------------------------------------------------------------------
 function CitationCard({ citation }: { citation: ChatCitation }) {
@@ -93,6 +117,14 @@ function MessageBubble({ message }: { message: ChatMessage }) {
                   {message.citations.map((c, i) => (
                     <CitationCard key={i} citation={c} />
                   ))}
+                  {(message as any).conflicts?.length > 0 && (
+                    <div className="space-y-1.5">
+                      <p className="text-xs font-semibold text-amber-600 uppercase tracking-wide">Known Conflicts</p>
+                      {(message as any).conflicts.map((c: any, i: number) => (
+                        <ConflictCard key={i} conflict={c} />
+                      ))}
+                    </div>
+                  )}
                 </motion.div>
               )}
             </AnimatePresence>
