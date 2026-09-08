@@ -20,7 +20,7 @@ settings = get_settings()
 
 _INDEX_FILE = Path(settings.faiss_index_dir) / "facts.index"
 _META_FILE = Path(settings.faiss_index_dir) / "facts_meta.json"
-_DIM = 768  # text-embedding-004 dimension
+_DIM = 384  # all-MiniLM-L6-v2 dimension
 
 _index: Optional[object] = None
 _meta: list[dict] = []  # [{fact_id, entity, attribute, period}]
@@ -103,7 +103,7 @@ def rebuild_index_from_db():
         return
 
     from database.db import get_db
-    from services.gemini_client import get_embedding
+    from services.local_embedder import get_embedding
 
     _index = faiss.IndexFlatIP(_DIM)
     _meta = []
