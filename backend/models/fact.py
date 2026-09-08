@@ -20,6 +20,7 @@ class FactResponse(BaseModel):
     entity: str
     attribute: str
     canonical_value: Optional[str] = None
+    canonical_unit: Optional[str] = None
     raw_value: str
     unit: Optional[str] = None
     period: Optional[str] = None

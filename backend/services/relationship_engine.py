@@ -5,8 +5,7 @@ from datetime import datetime, timezone
 from typing import Optional
 
 from database.db import get_db
-from prompts.relationship_prompts import RELATIONSHIP_EXPLANATION_PROMPT
-from services.gemini_client import generate_text, get_embedding
+from services.gemini_client import get_embedding
 from services.vector_store import add_fact_embedding, search_similar
 from services.incremental_indexer import get_new_facts_since_last_analysis
 from utils.logger import get_logger
@@ -92,7 +91,7 @@ def _numeric_match(v1: Optional[str], v2: Optional[str], attribute: str = "") ->
     """True if both are numbers and they are within attribute-specific tolerance."""
     n1, n2 = _extract_number(v1), _extract_number(v2)
     if n1 is None or n2 is None:
-        return v1 and v2 and v1.strip().lower() == v2.strip().lower()
+        return bool(v1 and v2 and v1.strip().lower() == v2.strip().lower())
     if n1 == 0 and n2 == 0:
         return True
     tol = _get_tolerance(attribute)
@@ -260,29 +259,42 @@ def _store_reasoning(relationship_id: str, steps: list[dict]):
         )
 
 
+def _generate_explanation(fact_a: dict, fact_b: dict, rel_type: str) -> str:
+    """Deterministic template-based explanation — no LLM."""
     ev_a = fact_a.get("evidence", {})
     ev_b = fact_b.get("evidence", {})
+    val_a = fact_a.get("canonical_value") or fact_a.get("raw_value", "")
+    val_b = fact_b.get("canonical_value") or fact_b.get("raw_value", "")
+    src_a = ev_a.get("original_filename", "Document A")
+    src_b = ev_b.get("original_filename", "Document B")
+    p_a = fact_a.get("period") or ""
+    p_b = fact_b.get("period") or ""
+    attr = fact_a.get("attribute", "")
+    entity = fact_a.get("entity", "")
 
-    prompt = RELATIONSHIP_EXPLANATION_PROMPT.format(
-        entity_a=fact_a["entity"], attribute_a=fact_a["attribute"],
-        value_a=fact_a.get("canonical_value") or fact_a["raw_value"],
-        period_a=fact_a.get("period") or "N/A",
-        source_a=ev_a.get("original_filename", "Unknown"),
-        page_a=ev_a.get("page_number", "?"),
-        snippet_a=ev_a.get("snippet", "")[:200],
-        entity_b=fact_b["entity"], attribute_b=fact_b["attribute"],
-        value_b=fact_b.get("canonical_value") or fact_b["raw_value"],
-        period_b=fact_b.get("period") or "N/A",
-        source_b=ev_b.get("original_filename", "Unknown"),
-        page_b=ev_b.get("page_number", "?"),
-        snippet_b=ev_b.get("snippet", "")[:200],
-        relationship_type=rel_type,
-    )
-    try:
-        return generate_text(prompt, temperature=0.2)
-    except Exception as e:
-        log.warning("Explanation generation failed: %s", e)
-        return f"{rel_type.capitalize()} relationship detected between {fact_a['entity']} and {fact_b['entity']}."
+    period_str_a = f" ({p_a})" if p_a else ""
+    period_str_b = f" ({p_b})" if p_b else ""
+
+    templates = {
+        "corroborated": (
+            f"{entity} {attr} of {val_a}{period_str_a} is corroborated across "
+            f"{src_a} and {src_b} — both sources report the same value."
+        ),
+        "contradiction": (
+            f"{entity} {attr} conflicts: {src_a} reports {val_a}{period_str_a} "
+            f"while {src_b} reports {val_b}{period_str_b} for the same period."
+        ),
+        "reconciled": (
+            f"{entity} {attr} changed from {val_a}{period_str_a} to {val_b}{period_str_b} "
+            f"— values differ across periods ({src_a} vs {src_b})."
+        ),
+        "related": (
+            f"{fact_a['entity']} and {fact_b['entity']} both report {attr}: "
+            f"{val_a} vs {val_b} — sourced from {src_a} and {src_b} respectively."
+        ),
+    }
+    return templates.get(rel_type, f"{rel_type.capitalize()} relationship between {entity} and {fact_b['entity']}.")
+
 
 
 # ---------------------------------------------------------------------------
@@ -372,23 +384,23 @@ def analyze_document_relationships(document_id: str) -> int:
         if not candidate_ids:
             continue
 
-        with get_db() as conn:
-            for cand_id in candidate_ids:
+        for cand_id in candidate_ids:
+            with get_db() as conn:
                 fact_a = _get_fact_with_evidence(fact["id"], conn)
                 fact_b = _get_fact_with_evidence(cand_id, conn)
-                if not fact_a or not fact_b:
-                    continue
+            if not fact_a or not fact_b:
+                continue
 
-                result = _detect_relationship(fact_a, fact_b)
-                if not result:
-                    continue
+            result = _detect_relationship(fact_a, fact_b)
+            if not result:
+                continue
 
-                rel_type, confidence, reasoning_steps = result
-                explanation = _generate_explanation(fact_a, fact_b, rel_type)
-                rel_id = _store_relationship(fact["id"], cand_id, rel_type, explanation, confidence)
-                if rel_id:
-                    _store_reasoning(rel_id, reasoning_steps)
-                    total_relationships += 1
+            rel_type, confidence, reasoning_steps = result
+            explanation = _generate_explanation(fact_a, fact_b, rel_type)
+            rel_id = _store_relationship(fact["id"], cand_id, rel_type, explanation, confidence)
+            if rel_id:
+                _store_reasoning(rel_id, reasoning_steps)
+                total_relationships += 1
 
     log.info("Relationship analysis complete | doc=%s | relationships=%d", document_id, total_relationships)
     return total_relationships

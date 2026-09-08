@@ -150,3 +150,14 @@ def init_db():
                 FOREIGN KEY (relationship_id) REFERENCES relationships(id)
             );
         """)
+        # Migrations — safe to run on existing DBs
+        _migrate(conn)
+
+
+def _migrate(conn):
+    """Apply additive schema migrations to existing databases."""
+    existing = {row[1] for row in conn.execute("PRAGMA table_info(facts)").fetchall()}
+    if "canonical_unit" not in existing:
+        conn.execute("ALTER TABLE facts ADD COLUMN canonical_unit TEXT")
+    if "facts_count" not in {row[1] for row in conn.execute("PRAGMA table_info(documents)").fetchall()}:
+        pass  # placeholder for future document migrations

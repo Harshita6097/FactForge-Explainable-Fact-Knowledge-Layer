@@ -201,9 +201,19 @@ def delete_document(doc_id: str):
         doc = conn.execute("SELECT filename FROM documents WHERE id=?", (doc_id,)).fetchone()
         if not doc:
             raise HTTPException(status_code=404, detail="Document not found")
+        # Delete in dependency order
+        fact_ids = [r[0] for r in conn.execute(
+            "SELECT id FROM facts WHERE document_id=?", (doc_id,)
+        ).fetchall()]
+        if fact_ids:
+            ph = ",".join("?" * len(fact_ids))
+            conn.execute(f"DELETE FROM relationships WHERE source_fact_id IN ({ph}) OR target_fact_id IN ({ph})",
+                         fact_ids + fact_ids)
+            conn.execute(f"DELETE FROM relationship_reasoning WHERE relationship_id NOT IN (SELECT id FROM relationships)")
         conn.execute("DELETE FROM evidence WHERE document_id=?", (doc_id,))
         conn.execute("DELETE FROM document_pages WHERE document_id=?", (doc_id,))
         conn.execute("DELETE FROM facts WHERE document_id=?", (doc_id,))
+        conn.execute("DELETE FROM canonical_facts WHERE source_fact_ids LIKE ?", (f'"%{doc_id}%"',))
         conn.execute("DELETE FROM documents WHERE id=?", (doc_id,))
 
     file_path = Path(settings.upload_dir) / doc["filename"]

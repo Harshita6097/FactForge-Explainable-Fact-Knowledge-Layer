@@ -130,7 +130,7 @@ def build_canonical_facts_for_document(document_id: str) -> int:
     """
     with get_db() as conn:
         facts = conn.execute(
-            """SELECT id, entity, attribute, canonical_value, canonical_unit,
+            """SELECT id, entity, attribute, canonical_value, unit as canonical_unit,
                       period, confidence
                FROM facts WHERE document_id=?""",
             (document_id,),
@@ -160,27 +160,27 @@ def build_canonical_facts_for_document(document_id: str) -> int:
 
 
 def _refresh_conflict_counts():
-    """Update conflicting_count on canonical facts based on contradiction relationships."""
+    """Recompute conflicting_count on all canonical facts from scratch."""
     with get_db() as conn:
+        # Reset all counts to 0 first
+        conn.execute("UPDATE canonical_facts SET conflicting_count=0")
         contradictions = conn.execute(
-            """SELECT r.source_fact_id, r.target_fact_id
-               FROM relationships r
-               WHERE r.relationship_type='contradiction'"""
+            "SELECT r.source_fact_id, r.target_fact_id FROM relationships r "
+            "WHERE r.relationship_type='contradiction'"
         ).fetchall()
-
+        seen_cf = set()
         for rel in contradictions:
             for fact_id in [rel["source_fact_id"], rel["target_fact_id"]]:
-                # Find which canonical fact this raw fact belongs to
                 cf = conn.execute(
-                    """SELECT id, conflicting_count FROM canonical_facts
-                       WHERE source_fact_ids LIKE ?""",
+                    "SELECT id FROM canonical_facts WHERE source_fact_ids LIKE ?",
                     (f'%"{fact_id}"%',),
                 ).fetchone()
-                if cf:
+                if cf and cf["id"] not in seen_cf:
                     conn.execute(
-                        "UPDATE canonical_facts SET conflicting_count=conflicting_count+1 WHERE id=? AND conflicting_count=0",
+                        "UPDATE canonical_facts SET conflicting_count=conflicting_count+1 WHERE id=?",
                         (cf["id"],),
                     )
+                    seen_cf.add(cf["id"])
 
 
 def get_canonical_facts(
