@@ -10,6 +10,7 @@ from fastapi.responses import JSONResponse
 from database.db import get_db
 from models.document import DocumentResponse, ProcessingStatus
 from services.document_processor import extract_pages, get_page_count, is_valid_pdf
+from services.fact_miner import mine_facts_for_document
 from utils.config import get_settings
 
 settings = get_settings()
@@ -58,13 +59,18 @@ def _process_document_background(doc_id: str, file_path: str):
                     for p in pages
                 ],
             )
+        # Mine facts from extracted pages via Gemini
+        _update_status(doc_id, "mining")
+        with get_db() as conn:
+            doc = conn.execute(
+                "SELECT original_filename FROM documents WHERE id=?", (doc_id,)
+            ).fetchone()
+        filename = doc["original_filename"] if doc else "unknown"
+        mine_facts_for_document(doc_id, filename)
         _update_status(doc_id, "completed")
     except Exception as e:
-        _update_status(doc_id, "failed")
         with get_db() as conn:
-            conn.execute(
-                "UPDATE documents SET status='failed' WHERE id=?", (doc_id,)
-            )
+            conn.execute("UPDATE documents SET status='failed' WHERE id=?", (doc_id,))
         raise e
 
 
