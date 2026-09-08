@@ -1,0 +1,26 @@
+services:
+  - type: web
+    name: factforge-api
+    runtime: python
+    region: oregon
+    plan: free
+    rootDir: backend
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: DATABASE_URL
+        value: factforge.db
+      - key: UPLOAD_DIR
+        value: uploads
+      - key: FAISS_INDEX_DIR
+        value: faiss_index
+      - key: MAX_BATCH_SIZE
+        value: "5"
+      - key: CORS_ORIGINS
+        value: https://your-frontend.vercel.app
+    disk:
+      name: factforge-data
+      mountPath: /opt/render/project/src/backend
+      sizeGB: 1
