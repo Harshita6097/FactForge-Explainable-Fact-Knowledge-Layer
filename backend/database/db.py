@@ -110,4 +110,43 @@ def init_db():
                 created_at TEXT NOT NULL,
                 FOREIGN KEY (session_id) REFERENCES chat_sessions(id)
             );
+
+            CREATE TABLE IF NOT EXISTS canonical_facts (
+                id TEXT PRIMARY KEY,
+                entity TEXT NOT NULL,
+                canonical_entity TEXT NOT NULL,
+                attribute TEXT NOT NULL,
+                canonical_attribute TEXT NOT NULL,
+                canonical_value TEXT,
+                canonical_unit TEXT,
+                period TEXT,
+                confidence REAL DEFAULT 0.5,
+                supporting_count INTEGER DEFAULT 1,
+                conflicting_count INTEGER DEFAULT 0,
+                source_fact_ids TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS entity_aliases (
+                raw_name TEXT PRIMARY KEY,
+                canonical_name TEXT NOT NULL,
+                confidence REAL DEFAULT 1.0,
+                created_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS attribute_aliases (
+                raw_attribute TEXT PRIMARY KEY,
+                canonical_attribute TEXT NOT NULL,
+                confidence REAL DEFAULT 1.0,
+                verified INTEGER DEFAULT 0,
+                created_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS relationship_reasoning (
+                relationship_id TEXT PRIMARY KEY,
+                steps TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY (relationship_id) REFERENCES relationships(id)
+            );
         """)

@@ -13,6 +13,7 @@ from services.document_processor import extract_pages, get_page_count, is_valid_
 from services.fact_miner import mine_facts_for_document
 from services.relationship_engine import analyze_document_relationships
 from services.incremental_indexer import is_duplicate_document
+from services.knowledge_layer import build_canonical_facts_for_document
 from api.progress import update_progress, clear_progress
 from utils.config import get_settings
 from utils.logger import get_logger
@@ -84,6 +85,9 @@ def _process_document_background(doc_id: str, file_path: str):
         update_progress(doc_id, "analyzing", total=len(pages), facts=total_facts)
         total_rels = analyze_document_relationships(doc_id)
         log.info("Relationship analysis complete for %s — %d relationships", filename, total_rels)
+
+        # Build canonical knowledge layer
+        build_canonical_facts_for_document(doc_id)
 
         _update_status(doc_id, "completed")
         update_progress(doc_id, "completed", total=len(pages), facts=total_facts, relationships=total_rels)
