@@ -4,12 +4,14 @@ from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 
 from utils.config import get_settings
+from utils.logger import get_logger
 from database.db import init_db
 from api.health import router as health_router
 from api.documents import router as documents_router
 from api.facts import router as facts_router
 
 settings = get_settings()
+log = get_logger("main")
 
 
 @asynccontextmanager
@@ -17,7 +19,10 @@ async def lifespan(app: FastAPI):
     os.makedirs(settings.upload_dir, exist_ok=True)
     os.makedirs(settings.faiss_index_dir, exist_ok=True)
     init_db()
+    log.info("FactForge API started | db=%s | uploads=%s",
+             settings.database_url, settings.upload_dir)
     yield
+    log.info("FactForge API shutting down")
 
 
 app = FastAPI(

@@ -1,12 +1,16 @@
 import fitz  # PyMuPDF
 from pathlib import Path
 from models.document import PageContent
+from utils.logger import get_logger
+
+log = get_logger("document_processor")
 
 
 def extract_pages(file_path: str) -> list[PageContent]:
     """Extract text from every page of a PDF, preserving page numbers."""
     pages: list[PageContent] = []
     doc = fitz.open(file_path)
+    log.info("Extracting pages from %s", file_path)
     try:
         for page_num in range(len(doc)):
             page = doc[page_num]
@@ -19,6 +23,7 @@ def extract_pages(file_path: str) -> list[PageContent]:
                 ))
     finally:
         doc.close()
+    log.info("Extracted %d non-empty pages from %s", len(pages), file_path)
     return pages
 
 

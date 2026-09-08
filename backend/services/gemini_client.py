@@ -2,8 +2,10 @@ import json
 import re
 import google.generativeai as genai
 from utils.config import get_settings
+from utils.logger import get_logger
 
 settings = get_settings()
+log = get_logger("gemini_client")
 
 _model = None
 _embed_model = None
@@ -28,10 +30,12 @@ def _get_embed_model():
 def generate_text(prompt: str, temperature: float = 0.1) -> str:
     """Call Gemini and return raw text response."""
     model = _get_model()
+    log.debug("Gemini generate | prompt_len=%d | temp=%.1f", len(prompt), temperature)
     response = model.generate_content(
         prompt,
         generation_config=genai.types.GenerationConfig(temperature=temperature),
     )
+    log.debug("Gemini response | response_len=%d", len(response.text))
     return response.text.strip()
 
 
@@ -61,6 +65,7 @@ def parse_json_response(text: str) -> list | dict:
 
 def get_embedding(text: str) -> list[float]:
     """Get embedding vector for a text string."""
+    log.debug("Getting embedding | text_len=%d", len(text))
     genai.configure(api_key=settings.gemini_api_key)
     result = genai.embed_content(
         model=_get_embed_model(),

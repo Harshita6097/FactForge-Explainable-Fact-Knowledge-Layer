@@ -74,6 +74,14 @@ def init_db():
                 FOREIGN KEY (document_id) REFERENCES documents(id)
             );
 
+            CREATE TABLE IF NOT EXISTS attribute_registry (
+                attribute TEXT NOT NULL,
+                canonical_attribute TEXT NOT NULL,
+                first_seen TEXT NOT NULL,
+                occurrence_count INTEGER DEFAULT 1,
+                PRIMARY KEY (attribute)
+            );
+
             CREATE TABLE IF NOT EXISTS relationships (
                 id TEXT PRIMARY KEY,
                 source_fact_id TEXT NOT NULL,

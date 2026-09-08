@@ -85,6 +85,16 @@ def get_fact(fact_id: str):
     )
 
 
+@router.get("/attributes")
+def list_attributes():
+    """Return all dynamically discovered attributes."""
+    with get_db() as conn:
+        rows = conn.execute(
+            "SELECT attribute, canonical_attribute, occurrence_count, first_seen FROM attribute_registry ORDER BY occurrence_count DESC"
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
 @router.get("/documents/{doc_id}/facts", response_model=list[FactResponse])
 def get_document_facts(doc_id: str):
     with get_db() as conn:

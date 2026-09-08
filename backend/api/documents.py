@@ -12,8 +12,10 @@ from models.document import DocumentResponse, ProcessingStatus
 from services.document_processor import extract_pages, get_page_count, is_valid_pdf
 from services.fact_miner import mine_facts_for_document
 from utils.config import get_settings
+from utils.logger import get_logger
 
 settings = get_settings()
+log = get_logger("documents_api")
 router = APIRouter()
 
 
@@ -43,13 +45,14 @@ def _update_status(doc_id: str, status: str, page_count: Optional[int] = None):
 
 
 def _process_document_background(doc_id: str, file_path: str):
-    """Background task: extract pages and store them, then mark ready for fact mining."""
+    """Background task: extract pages, mine facts, canonicalize."""
     try:
+        log.info("Starting processing for document %s", doc_id)
         _update_status(doc_id, "processing")
         pages = extract_pages(file_path)
         _update_status(doc_id, "extracted", len(pages))
+        log.info("Extracted %d pages for document %s", len(pages), doc_id)
 
-        # Store raw pages in a lightweight pages table for incremental processing
         with get_db() as conn:
             conn.executemany(
                 """INSERT OR IGNORE INTO document_pages (id, document_id, page_number, text, char_count)
@@ -59,16 +62,18 @@ def _process_document_background(doc_id: str, file_path: str):
                     for p in pages
                 ],
             )
-        # Mine facts from extracted pages via Gemini
+
         _update_status(doc_id, "mining")
         with get_db() as conn:
             doc = conn.execute(
                 "SELECT original_filename FROM documents WHERE id=?", (doc_id,)
             ).fetchone()
         filename = doc["original_filename"] if doc else "unknown"
-        mine_facts_for_document(doc_id, filename)
+        total_facts = mine_facts_for_document(doc_id, filename)
+        log.info("Mining complete for %s — %d facts stored", filename, total_facts)
         _update_status(doc_id, "completed")
     except Exception as e:
+        log.error("Processing failed for document %s: %s", doc_id, e, exc_info=True)
         with get_db() as conn:
             conn.execute("UPDATE documents SET status='failed' WHERE id=?", (doc_id,))
         raise e
@@ -94,6 +99,7 @@ async def upload_document(
         raise HTTPException(status_code=400, detail="Uploaded file is not a valid PDF")
 
     page_count = get_page_count(str(upload_path))
+    log.info("Upload received: %s (%d pages)", file.filename, page_count)
     _save_document_record(doc_id, safe_name, file.filename, page_count)
     background_tasks.add_task(_process_document_background, doc_id, str(upload_path))
 
