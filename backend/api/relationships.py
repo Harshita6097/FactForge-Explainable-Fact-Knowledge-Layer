@@ -2,13 +2,14 @@ from fastapi import APIRouter, HTTPException, Query, BackgroundTasks
 from database.db import get_db
 from services.relationship_engine import analyze_document_relationships
 from utils.logger import get_logger
+import json
 
 log = get_logger("relationships_api")
 router = APIRouter()
 
 
 def _enrich_relationship(row: dict) -> dict:
-    """Attach source and target fact details including evidence."""
+    """Attach source and target fact details including evidence and reasoning."""
     with get_db() as conn:
         src = conn.execute(
             """SELECT f.*, e.page_number, e.snippet, d.original_filename
@@ -26,11 +27,16 @@ def _enrich_relationship(row: dict) -> dict:
                WHERE f.id=? LIMIT 1""",
             (row["target_fact_id"],),
         ).fetchone()
+        reasoning = conn.execute(
+            "SELECT steps FROM relationship_reasoning WHERE relationship_id=?",
+            (row["id"],),
+        ).fetchone()
 
     return {
         **row,
         "source_fact": dict(src) if src else None,
         "target_fact": dict(tgt) if tgt else None,
+        "reasoning_steps": json.loads(reasoning["steps"]) if reasoning else [],
     }
 
 
