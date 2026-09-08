@@ -10,6 +10,7 @@ from api.health import router as health_router
 from api.documents import router as documents_router
 from api.facts import router as facts_router
 from api.relationships import router as relationships_router
+from api.timeline import router as timeline_router
 
 settings = get_settings()
 log = get_logger("main")
@@ -45,6 +46,7 @@ app.include_router(health_router, prefix="/api", tags=["health"])
 app.include_router(documents_router, prefix="/api", tags=["documents"])
 app.include_router(facts_router, prefix="/api", tags=["facts"])
 app.include_router(relationships_router, prefix="/api", tags=["relationships"])
+app.include_router(timeline_router, prefix="/api", tags=["timeline"])
 
 
 @app.get("/")
