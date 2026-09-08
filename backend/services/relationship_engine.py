@@ -161,7 +161,7 @@ def _get_fact_with_evidence(fact_id: str, conn) -> Optional[dict]:
 
 
 # ---------------------------------------------------------------------------
-# Explanation via Gemini — only called after relationship is detected
+# Deterministic explanation builder
 # ---------------------------------------------------------------------------
 
 def _build_reasoning_steps(
@@ -365,12 +365,15 @@ def analyze_document_relationships(document_id: str) -> int:
             embedding = None
 
         if embedding:
+            from services.vector_store import get_index_meta
+            already_indexed = any(m["fact_id"] == fact["id"] for m in get_index_meta())
+            if not already_indexed:
+                add_fact_embedding(fact["id"], fact["entity"], fact["attribute"], fact.get("period"), embedding)
             candidates_meta = search_similar(embedding, top_k=20, threshold=_SIMILARITY_THRESHOLD)
             candidate_ids = [
                 c["fact_id"] for c in candidates_meta
                 if c["fact_id"] != fact["id"]
             ]
-            add_fact_embedding(fact["id"], fact["entity"], fact["attribute"], fact.get("period"), embedding)
         else:
             with get_db() as conn:
                 rows = conn.execute(

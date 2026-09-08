@@ -96,6 +96,11 @@ def get_index_size() -> int:
     return _index.ntotal
 
 
+def get_index_meta() -> list[dict]:
+    """Return the metadata list for all indexed vectors."""
+    return _meta
+
+
 def rebuild_index_from_db():
     """Rebuild the full FAISS index from all facts in DB. Used for recovery."""
     global _index, _meta

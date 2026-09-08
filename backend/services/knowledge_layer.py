@@ -130,7 +130,7 @@ def build_canonical_facts_for_document(document_id: str) -> int:
     """
     with get_db() as conn:
         facts = conn.execute(
-            """SELECT id, entity, attribute, canonical_value, unit as canonical_unit,
+            """SELECT id, entity, attribute, canonical_value, canonical_unit,
                       period, confidence
                FROM facts WHERE document_id=?""",
             (document_id,),

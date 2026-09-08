@@ -1,4 +1,4 @@
-export type DocumentStatus = "pending" | "processing" | "completed" | "failed";
+export type DocumentStatus = "pending" | "processing" | "extracted" | "mining" | "analyzing" | "completed" | "failed";
 
 export interface Document {
   id: string;
@@ -32,6 +32,7 @@ export interface Fact {
   entity: string;
   attribute: string;
   canonical_value: string | null;
+  canonical_unit: string | null;
   raw_value: string;
   unit: string | null;
   period: string | null;

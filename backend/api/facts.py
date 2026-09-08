@@ -102,7 +102,7 @@ def get_fact(fact_id: str):
     base_confidence = fact_dict["confidence"]
 
     confidence_breakdown = [
-        {"signal": "Gemini extraction confidence", "value": round(base_confidence, 3),
+        {"signal": "Extraction confidence", "value": round(base_confidence, 3),
          "weight": "base", "positive": base_confidence >= 0.7},
         {"signal": "Explicit numeric value", "value": 1.0 if fact_dict.get("canonical_value") else 0.0,
          "weight": "+0.05", "positive": bool(fact_dict.get("canonical_value"))},

@@ -216,7 +216,12 @@ def delete_document(doc_id: str):
                 rph = ",".join("?" * len(rel_ids))
                 conn.execute(f"DELETE FROM relationship_reasoning WHERE relationship_id IN ({rph})", rel_ids)
                 conn.execute(f"DELETE FROM relationships WHERE id IN ({rph})", rel_ids)
-        conn.execute("DELETE FROM canonical_facts WHERE source_fact_ids LIKE ?", (f'"%{doc_id}%"',))
+        if fact_ids:
+            for fid in fact_ids:
+                conn.execute(
+                    "DELETE FROM canonical_facts WHERE source_fact_ids LIKE ?",
+                    (f'%"{fid}"%',),
+                )
         conn.execute("DELETE FROM evidence WHERE document_id=?", (doc_id,))
         conn.execute("DELETE FROM document_pages WHERE document_id=?", (doc_id,))
         conn.execute("DELETE FROM facts WHERE document_id=?", (doc_id,))

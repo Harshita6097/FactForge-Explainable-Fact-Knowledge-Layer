@@ -118,7 +118,7 @@ def compute_optimal_batch_size(pages: list[dict]) -> int:
     avg_chars = sum(p.get("char_count", len(p.get("text", ""))) for p in pages) / len(pages)
 
     if avg_chars > 4000:
-        return 2   # Very dense — 2 pages per Gemini call
+        return 2   # Very dense pages
     elif avg_chars > 2000:
         return 3   # Normal density
     elif avg_chars > 800:

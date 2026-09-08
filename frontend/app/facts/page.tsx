@@ -32,8 +32,10 @@ function FactCard({ fact }: { fact: Fact }) {
           {/* Value */}
           <p className="text-lg font-bold">
             {fact.canonical_value || fact.raw_value}
-            {fact.unit && (
-              <span className="text-sm font-normal text-muted-foreground ml-1">{fact.unit}</span>
+            {(fact.canonical_unit || fact.unit) && (
+              <span className="text-sm font-normal text-muted-foreground ml-1">
+                {fact.canonical_unit || fact.unit}
+              </span>
             )}
           </p>
         </div>

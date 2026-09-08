@@ -183,7 +183,7 @@ export default function UploadPage() {
   }, []);
 
   const processingIds = new Set(processingDocIds.map((p) => p.id));
-  const completedDocs = documents.filter((d) => !processingIds.has(d.id));
+  const listedDocs = documents.filter((d) => !processingIds.has(d.id));
 
   return (
     <div className="min-h-screen flex flex-col">
@@ -260,12 +260,12 @@ export default function UploadPage() {
         )}
 
         {/* Document list */}
-        {!isLoading && completedDocs.length > 0 && (
+        {!isLoading && listedDocs.length > 0 && (
           <div className="space-y-3">
             <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">
-              {completedDocs.length} Document{completedDocs.length !== 1 ? "s" : ""}
+              {listedDocs.length} Document{listedDocs.length !== 1 ? "s" : ""}
             </p>
-            {completedDocs.map((doc) => (
+            {listedDocs.map((doc) => (
               <DocumentCard key={doc.id} doc={doc} />
             ))}
           </div>
