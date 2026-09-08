@@ -23,6 +23,7 @@ class ChatResponse(BaseModel):
     citations: list[dict]
     facts_used: int
     has_answer: bool
+    conflicts: list[dict] = []
 
 
 def _get_or_create_session(session_id: str | None) -> str:
@@ -89,6 +90,7 @@ def chat(request: ChatRequest):
         citations=result["citations"],
         facts_used=result["facts_used"],
         has_answer=result["has_answer"],
+        conflicts=result.get("conflicts", []),
     )
 
 

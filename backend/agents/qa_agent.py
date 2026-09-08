@@ -8,67 +8,64 @@ from utils.logger import get_logger
 
 log = get_logger("qa_agent")
 
-# How many facts to retrieve for context
 _TOP_K = 12
-_SIMILARITY_THRESHOLD = 0.65  # Lower than relationship engine — cast wider net for chat
+_SIMILARITY_THRESHOLD = 0.65
 
 
 def _retrieve_relevant_facts(question: str) -> list[dict]:
     """
-    Retrieve the most relevant facts for a question using FAISS.
-    Falls back to keyword search in DB if FAISS has no results.
+    Retrieve relevant facts using FAISS semantic search.
+    No keyword fallback — relies entirely on semantic retrieval.
     """
     try:
         embedding = get_embedding(question)
         candidates = search_similar(embedding, top_k=_TOP_K, threshold=_SIMILARITY_THRESHOLD)
         fact_ids = [c["fact_id"] for c in candidates]
     except Exception as e:
-        log.warning("FAISS retrieval failed: %s — falling back to keyword search", e)
-        fact_ids = []
+        log.warning("FAISS retrieval failed: %s", e)
+        return []
 
-    if fact_ids:
-        with get_db() as conn:
-            placeholders = ",".join("?" * len(fact_ids))
-            facts = conn.execute(
-                f"""SELECT f.*, e.page_number, e.snippet, d.original_filename
-                    FROM facts f
-                    LEFT JOIN evidence e ON e.fact_id = f.id
-                    LEFT JOIN documents d ON d.id = f.document_id
-                    WHERE f.id IN ({placeholders})""",
-                fact_ids,
-            ).fetchall()
-        return [dict(f) for f in facts]
-
-    # Keyword fallback — extract key terms from question
-    keywords = [w for w in re.findall(r"\b\w{4,}\b", question.lower()) if w not in {
-        "what", "when", "where", "which", "that", "this", "with", "from", "have", "does", "were"
-    }]
-
-    if not keywords:
+    if not fact_ids:
         return []
 
     with get_db() as conn:
-        conditions = " OR ".join(
-            ["LOWER(f.entity) LIKE ? OR LOWER(f.attribute) LIKE ? OR LOWER(f.raw_value) LIKE ?"]
-            * len(keywords)
-        )
-        params = []
-        for kw in keywords:
-            params += [f"%{kw}%", f"%{kw}%", f"%{kw}%"]
-        params.append(_TOP_K)
-
+        placeholders = ",".join("?" * len(fact_ids))
         facts = conn.execute(
             f"""SELECT f.*, e.page_number, e.snippet, d.original_filename
                 FROM facts f
                 LEFT JOIN evidence e ON e.fact_id = f.id
                 LEFT JOIN documents d ON d.id = f.document_id
-                WHERE {conditions}
-                LIMIT ?""",
-            params,
+                WHERE f.id IN ({placeholders})""",
+            fact_ids,
         ).fetchall()
-
-    log.info("Keyword fallback retrieved %d facts for question", len(facts))
     return [dict(f) for f in facts]
+
+
+def _get_conflicts_for_facts(fact_ids: list[str]) -> list[dict]:
+    """Find any contradiction relationships among the retrieved facts."""
+    if not fact_ids:
+        return []
+    with get_db() as conn:
+        placeholders = ",".join("?" * len(fact_ids))
+        rels = conn.execute(
+            f"""SELECT r.relationship_type, r.explanation,
+                       fa.entity as src_entity, fa.attribute as src_attr,
+                       fa.canonical_value as src_value, fa.period as src_period,
+                       da.original_filename as src_doc,
+                       fb.entity as tgt_entity, fb.attribute as tgt_attr,
+                       fb.canonical_value as tgt_value, fb.period as tgt_period,
+                       db.original_filename as tgt_doc
+                FROM relationships r
+                JOIN facts fa ON r.source_fact_id=fa.id
+                JOIN facts fb ON r.target_fact_id=fb.id
+                JOIN documents da ON fa.document_id=da.id
+                JOIN documents db ON fb.document_id=db.id
+                WHERE (r.source_fact_id IN ({placeholders})
+                   OR r.target_fact_id IN ({placeholders}))
+                AND r.relationship_type IN ('contradiction', 'reconciled')""",
+            fact_ids + fact_ids,
+        ).fetchall()
+    return [dict(r) for r in rels]
 
 
 def _build_fact_context(facts: list[dict]) -> str:
@@ -152,8 +149,8 @@ def _parse_citations(answer: str, facts: list[dict]) -> list[dict]:
 
 def answer_question(question: str) -> dict:
     """
-    Main QA entry point.
-    Returns {answer, citations, facts_used, has_answer}.
+    Main QA entry point. Queries the knowledge layer.
+    Returns {answer, citations, facts_used, has_answer, conflicts}.
     """
     log.info("QA question: %s", question[:100])
 
@@ -166,11 +163,27 @@ def answer_question(question: str) -> dict:
             "citations": [],
             "facts_used": 0,
             "has_answer": False,
+            "conflicts": [],
         }
 
+    fact_ids = [f["id"] for f in facts]
+    conflicts = _get_conflicts_for_facts(fact_ids)
+
     fact_context = _build_fact_context(facts)
+
+    # Add conflict context to prompt if any exist
+    conflict_context = ""
+    if conflicts:
+        conflict_lines = []
+        for c in conflicts[:5]:
+            conflict_lines.append(
+                f"  - {c['src_entity']} {c['src_attr']}: {c['src_value']} ({c['src_period']}, {c['src_doc']}) "
+                f"vs {c['tgt_value']} ({c['tgt_period']}, {c['tgt_doc']}) — {c['relationship_type']}"
+            )
+        conflict_context = "\n\nKnown conflicts/reconciliations in this data:\n" + "\n".join(conflict_lines)
+
     prompt = CHAT_SYSTEM_PROMPT.format(
-        fact_context=fact_context,
+        fact_context=fact_context + conflict_context,
         question=question,
     )
 
@@ -183,17 +196,19 @@ def answer_question(question: str) -> dict:
             "citations": [],
             "facts_used": len(facts),
             "has_answer": False,
+            "conflicts": [],
         }
 
     citations = _parse_citations(answer, facts)
     has_answer = "don't have enough information" not in answer.lower()
 
-    log.info("QA complete | facts_used=%d | citations=%d | has_answer=%s",
-             len(facts), len(citations), has_answer)
+    log.info("QA complete | facts_used=%d | citations=%d | conflicts=%d | has_answer=%s",
+             len(facts), len(citations), len(conflicts), has_answer)
 
     return {
         "answer": answer,
         "citations": citations,
         "facts_used": len(facts),
         "has_answer": has_answer,
+        "conflicts": conflicts,
     }
