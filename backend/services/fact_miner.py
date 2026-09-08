@@ -4,18 +4,15 @@ from typing import Optional
 
 from database.db import get_db
 from models.fact import RawExtractedFact
-from prompts.fact_extraction import BATCH_FACT_EXTRACTION_PROMPT
-from services.gemini_client import generate_text, parse_json_response
+from services.rule_extractor import extract_facts_from_pages
 from services.canonicalizer import canonicalize_fact, register_attribute
 from services.incremental_indexer import (
     get_existing_fact_fingerprints,
     is_fact_duplicate,
     compute_optimal_batch_size,
 )
-from utils.config import get_settings
 from utils.logger import get_logger
 
-settings = get_settings()
 log = get_logger("fact_miner")
 
 
@@ -132,18 +129,11 @@ def mine_facts_for_document(document_id: str, filename: str) -> int:
         page_range = f"{batch[0]['page_number']}-{batch[-1]['page_number']}"
         log.info("Processing batch pages %s of %s", page_range, filename)
 
-        pages_text = _build_pages_text(batch)
         first_page = batch[0]["page_number"]
-        prompt = BATCH_FACT_EXTRACTION_PROMPT.format(pages_text=pages_text)
-
         try:
-            response = generate_text(prompt, temperature=0.1)
-            raw_list = parse_json_response(response)
-            if not isinstance(raw_list, list):
-                log.warning("Gemini returned non-list for pages %s, skipping", page_range)
-                raw_list = []
+            raw_list = extract_facts_from_pages(batch)
         except Exception as e:
-            log.error("Gemini call failed for pages %s: %s", page_range, e)
+            log.error("Rule extraction failed for pages %s: %s", page_range, e)
             raw_list = []
 
         facts = _parse_facts(raw_list, default_page=first_page)
