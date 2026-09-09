@@ -1,8 +1,11 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { fetchDocuments, fetchDocument, fetchDocumentStatus, deleteDocument } from "@/lib/api/documents";
 
-export function useDocuments() {
-  return useQuery({ queryKey: ["documents"], queryFn: fetchDocuments });
+export function useDocuments(projectId?: string) {
+  return useQuery({
+    queryKey: ["documents", { projectId }],
+    queryFn: () => fetchDocuments(projectId),
+  });
 }
 
 export function useDocument(id: string) {
@@ -25,6 +28,9 @@ export function useDeleteDocument() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: deleteDocument,
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["documents"] }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["documents"] });
+      qc.invalidateQueries({ queryKey: ["projects"] });
+    },
   });
 }

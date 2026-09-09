@@ -1,4 +1,21 @@
+export interface User {
+  id: string;
+  email: string;
+  name: string;
+  created_at: string;
+}
+
 export type DocumentStatus = "pending" | "processing" | "extracted" | "mining" | "analyzing" | "completed" | "failed";
+
+export interface Project {
+  id: string;
+  name: string;
+  description: string | null;
+  created_at: string;
+  updated_at: string;
+  document_count: number;
+  fact_count: number;
+}
 
 export interface Document {
   id: string;
@@ -8,6 +25,7 @@ export interface Document {
   status: DocumentStatus;
   uploaded_at: string;
   processed_at: string | null;
+  project_id: string | null;
 }
 
 export interface Evidence {
@@ -40,6 +58,7 @@ export interface Fact {
   created_at: string;
   evidence?: Evidence[];
   confidence_breakdown?: ConfidenceSignal[];
+  project_id?: string | null;
 }
 
 export interface CanonicalFact {
@@ -62,7 +81,7 @@ export interface CanonicalFact {
   updated_at: string;
 }
 
-export type RelationshipType = "corroborated" | "contradiction" | "reconciled" | "related";
+export type RelationshipType = "corroborated" | "contradiction" | "reconciled" | "related" | "extraction_failure";
 
 export interface ReasoningStep {
   step: number;
@@ -77,11 +96,26 @@ export interface Relationship {
   target_fact_id: string;
   relationship_type: RelationshipType;
   explanation: string | null;
+  reasoning_summary: string | null;
   confidence: number;
   created_at: string;
   source_fact?: Fact;
   target_fact?: Fact;
   reasoning_steps?: ReasoningStep[];
+  src_doc?: string;
+  tgt_doc?: string;
+}
+
+export interface ExtractionFailure {
+  id: string;
+  document_id: string;
+  original_filename: string;
+  page_number: number | null;
+  raw_text: string;
+  failure_reason: string;
+  chain_of_thought: string;
+  confidence: number;
+  created_at: string;
 }
 
 export interface DashboardStats {

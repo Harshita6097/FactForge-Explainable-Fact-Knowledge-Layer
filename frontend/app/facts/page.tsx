@@ -9,9 +9,32 @@ import { Badge } from "@/components/ui/badge";
 import { Card, CardContent } from "@/components/ui/card";
 import { useFacts } from "@/hooks/useFacts";
 import { useDocuments } from "@/hooks/useDocuments";
+import { useFactRelationships } from "@/hooks/useRelationships";
+import { FactDetailPanel, REL_STYLES } from "@/components/fact-detail-panel";
 import { Fact } from "@/types";
 
-function FactCard({ fact }: { fact: Fact }) {
+function RelBadges({ factId }: { factId: string }) {
+  const { data: rels = [] } = useFactRelationships(factId);
+  if (!rels.length) return null;
+  const counts = rels.reduce<Record<string, number>>((acc, r) => {
+    acc[r.relationship_type] = (acc[r.relationship_type] ?? 0) + 1;
+    return acc;
+  }, {});
+  return (
+    <div className="flex gap-1 flex-wrap mt-1.5">
+      {Object.entries(counts).map(([type, count]) => {
+        const s = REL_STYLES[type] ?? REL_STYLES.related;
+        return (
+          <span key={type} className={`text-[10px] font-semibold px-1.5 py-0.5 rounded border ${s.badge}`}>
+            {s.icon} {count} {s.label}
+          </span>
+        );
+      })}
+    </div>
+  );
+}
+
+function FactCard({ fact, onSelect }: { fact: Fact; onSelect: (id: string) => void }) {
   const [expanded, setExpanded] = useState(false);
   return (
     <div
@@ -20,7 +43,6 @@ function FactCard({ fact }: { fact: Fact }) {
     >
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0 space-y-1 flex-1">
-          {/* Entity · Attribute */}
           <div className="flex items-center gap-1.5 flex-wrap text-xs text-muted-foreground">
             <span className="font-semibold text-foreground">{fact.entity}</span>
             <span>·</span>
@@ -29,7 +51,6 @@ function FactCard({ fact }: { fact: Fact }) {
               <Badge variant="outline" className="text-xs">{fact.period}</Badge>
             )}
           </div>
-          {/* Value */}
           <p className="text-lg font-bold">
             {fact.canonical_value || fact.raw_value}
             {(fact.canonical_unit || fact.unit) && (
@@ -38,8 +59,9 @@ function FactCard({ fact }: { fact: Fact }) {
               </span>
             )}
           </p>
+          <RelBadges factId={fact.id} />
         </div>
-        <div className="text-right shrink-0">
+        <div className="flex flex-col items-end gap-1 shrink-0">
           <div className={`text-sm font-bold ${
             fact.confidence >= 0.8 ? "text-green-600" :
             fact.confidence >= 0.6 ? "text-amber-600" : "text-red-500"
@@ -47,10 +69,15 @@ function FactCard({ fact }: { fact: Fact }) {
             {Math.round(fact.confidence * 100)}%
           </div>
           <div className="text-xs text-muted-foreground">confidence</div>
+          <button
+            onClick={(e) => { e.stopPropagation(); onSelect(fact.id); }}
+            className="text-[11px] text-primary hover:underline mt-1"
+          >
+            Details →
+          </button>
         </div>
       </div>
 
-      {/* Expanded: source evidence */}
       {expanded && (
         <motion.div
           initial={{ opacity: 0, height: 0 }}
@@ -65,7 +92,7 @@ function FactCard({ fact }: { fact: Fact }) {
               </p>
               {ev.snippet && (
                 <p className="text-xs italic text-muted-foreground border-l-2 border-muted pl-2 leading-relaxed">
-                  "{ev.snippet}"
+                  &ldquo;{ev.snippet}&rdquo;
                 </p>
               )}
             </div>
@@ -84,6 +111,7 @@ export default function FactsPage() {
   const router = useRouter();
   const [search, setSearch] = useState("");
   const [selectedDoc, setSelectedDoc] = useState(searchParams.get("doc") || "");
+  const [selectedFactId, setSelectedFactId] = useState<string | null>(null);
 
   const { data: documents = [] } = useDocuments();
   const { data: facts = [], isLoading } = useFacts(
@@ -112,6 +140,7 @@ export default function FactsPage() {
   return (
     <div className="min-h-screen flex flex-col">
       <Navbar />
+      <FactDetailPanel factId={selectedFactId} onClose={() => setSelectedFactId(null)} />
       <main className="flex-1 max-w-4xl mx-auto px-4 py-10 w-full space-y-6">
 
         {/* Header */}
@@ -191,7 +220,7 @@ export default function FactsPage() {
                   </div>
                   <div className="space-y-2">
                     {attrFacts.map((fact) => (
-                      <FactCard key={fact.id} fact={fact} />
+                      <FactCard key={fact.id} fact={fact} onSelect={setSelectedFactId} />
                     ))}
                   </div>
                 </motion.div>

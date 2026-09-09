@@ -9,7 +9,7 @@ const STAGE_LABELS: Record<string, string> = {
   pending:    "Queued",
   processing: "Extracting pages…",
   extracted:  "Pages extracted",
-  mining:     "Mining facts with AI…",
+  mining:     "Mining facts…",
   analyzing:  "Detecting relationships…",
   completed:  "Complete",
   failed:     "Failed",

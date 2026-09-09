@@ -1,10 +1,11 @@
 import apiClient from "./client";
 import { Document } from "@/types";
 
-export async function uploadDocument(file: File, onProgress?: (pct: number) => void): Promise<Document> {
+export async function uploadDocument(file: File, projectId?: string, onProgress?: (pct: number) => void): Promise<Document> {
   const form = new FormData();
   form.append("file", file);
-  const { data } = await apiClient.post("/api/documents/upload", form, {
+  const url = projectId ? `/api/documents/upload?project_id=${projectId}` : "/api/documents/upload";
+  const { data } = await apiClient.post(url, form, {
     headers: { "Content-Type": "multipart/form-data" },
     onUploadProgress: (e) => {
       if (onProgress && e.total) onProgress(Math.round((e.loaded / e.total) * 100));
@@ -13,8 +14,8 @@ export async function uploadDocument(file: File, onProgress?: (pct: number) => v
   return data;
 }
 
-export async function fetchDocuments(): Promise<Document[]> {
-  const { data } = await apiClient.get("/api/documents");
+export async function fetchDocuments(projectId?: string): Promise<Document[]> {
+  const { data } = await apiClient.get("/api/documents", { params: projectId ? { project_id: projectId } : {} });
   return data;
 }
 

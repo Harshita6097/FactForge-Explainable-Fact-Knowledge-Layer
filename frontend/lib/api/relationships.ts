@@ -1,8 +1,9 @@
 import apiClient from "./client";
-import { Relationship } from "@/types";
+import { Relationship, ExtractionFailure } from "@/types";
 
 export async function fetchRelationships(params?: {
   relationship_type?: string;
+  project_id?: string;
   limit?: number;
   offset?: number;
 }): Promise<Relationship[]> {
@@ -15,13 +16,22 @@ export async function fetchRelationship(id: string): Promise<Relationship> {
   return data;
 }
 
-export async function fetchRelationshipsSummary(): Promise<Record<string, number>> {
-  const { data } = await apiClient.get("/api/relationships/summary");
+export async function fetchRelationshipsSummary(params?: { project_id?: string }): Promise<Record<string, number>> {
+  const { data } = await apiClient.get("/api/relationships/summary", { params });
   return data;
 }
 
 export async function fetchFactRelationships(factId: string): Promise<Relationship[]> {
   const { data } = await apiClient.get(`/api/facts/${factId}/relationships`);
+  return data;
+}
+
+export async function fetchExtractionFailures(params?: {
+  project_id?: string;
+  document_id?: string;
+  limit?: number;
+}): Promise<ExtractionFailure[]> {
+  const { data } = await apiClient.get("/api/extraction-failures", { params });
   return data;
 }
 

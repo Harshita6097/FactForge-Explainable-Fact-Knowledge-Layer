@@ -25,7 +25,7 @@ export function useDeleteSession() {
   });
 }
 
-export function useChat() {
+export function useChat(projectId?: string) {
   const qc = useQueryClient();
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [messages, setMessages] = useState<(ChatMessage & { conflicts?: any[] })[]>([]);
@@ -49,7 +49,7 @@ export function useChat() {
     setError(null);
 
     try {
-      const result: AskResponse = await askQuestion(question, sessionId ?? undefined);
+      const result: AskResponse = await askQuestion(question, sessionId ?? undefined, projectId);
 
       if (!sessionId) {
         setSessionId(result.session_id);
@@ -73,7 +73,7 @@ export function useChat() {
     } finally {
       setIsLoading(false);
     }
-  }, [sessionId, isLoading, qc]);
+  }, [sessionId, isLoading, qc, projectId]);
 
   const clearChat = useCallback(() => {
     setMessages([]);

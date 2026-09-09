@@ -51,9 +51,10 @@ export interface ConflictInfo {
 
 export async function askQuestion(
   question: string,
-  session_id?: string
+  session_id?: string,
+  project_id?: string
 ): Promise<AskResponse> {
-  const { data } = await apiClient.post("/api/chat", { question, session_id });
+  const { data } = await apiClient.post("/api/chat", { question, session_id, project_id });
   return data;
 }
 

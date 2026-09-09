@@ -34,6 +34,8 @@ export interface TimelineResponse {
 export async function fetchTimeline(params?: {
   entity?: string;
   attribute?: string;
+  project_id?: string;
+  document_id?: string;
 }): Promise<TimelineResponse> {
   const { data } = await apiClient.get("/api/timeline", { params });
   return data;

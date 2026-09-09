@@ -155,7 +155,7 @@ export default function UploadPage() {
       prev.map((it, i) => (i === index ? { ...it, status: "uploading" } : it))
     );
     try {
-      const doc = await uploadDocument(file, (pct) => {
+      const doc = await uploadDocument(file, undefined, (pct: number) => {
         setItems((prev) =>
           prev.map((it, i) => (i === index ? { ...it, progress: pct } : it))
         );

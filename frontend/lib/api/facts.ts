@@ -3,6 +3,7 @@ import { Fact, DashboardStats } from "@/types";
 
 export async function fetchFacts(params?: {
   document_id?: string;
+  project_id?: string;
   entity?: string;
   attribute?: string;
   limit?: number;

@@ -5,6 +5,14 @@ const apiClient = axios.create({
   headers: { "Content-Type": "application/json" },
 });
 
+apiClient.interceptors.request.use((config) => {
+  if (typeof window !== "undefined") {
+    const token = localStorage.getItem("ff_token");
+    if (token) config.headers.Authorization = `Bearer ${token}`;
+  }
+  return config;
+});
+
 apiClient.interceptors.response.use(
   (res) => res,
   (err) => {

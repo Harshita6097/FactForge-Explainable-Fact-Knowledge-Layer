@@ -1,7 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { fetchFacts, fetchFact, fetchFactStats, fetchDocumentFacts } from "@/lib/api/facts";
 
-export function useFacts(params?: { document_id?: string; entity?: string; attribute?: string }) {
+export function useFacts(params?: { document_id?: string; project_id?: string; entity?: string; attribute?: string }) {
   return useQuery({
     queryKey: ["facts", params],
     queryFn: () => fetchFacts(params),
@@ -10,7 +10,7 @@ export function useFacts(params?: { document_id?: string; entity?: string; attri
 
 export function useFact(id: string) {
   return useQuery({
-    queryKey: ["facts", id],
+    queryKey: ["fact-detail", id],
     queryFn: () => fetchFact(id),
     enabled: !!id,
   });

@@ -4,9 +4,10 @@ import {
   fetchRelationship,
   fetchRelationshipsSummary,
   fetchFactRelationships,
+  fetchExtractionFailures,
 } from "@/lib/api/relationships";
 
-export function useRelationships(params?: { relationship_type?: string; limit?: number }) {
+export function useRelationships(params?: { relationship_type?: string; project_id?: string; limit?: number }) {
   return useQuery({
     queryKey: ["relationships", params],
     queryFn: () => fetchRelationships(params),
@@ -21,10 +22,10 @@ export function useRelationship(id: string) {
   });
 }
 
-export function useRelationshipsSummary() {
+export function useRelationshipsSummary(params?: { project_id?: string }) {
   return useQuery({
-    queryKey: ["relationships", "summary"],
-    queryFn: fetchRelationshipsSummary,
+    queryKey: ["relationships", "summary", params],
+    queryFn: () => fetchRelationshipsSummary(params),
     refetchInterval: 15_000,
   });
 }
@@ -34,5 +35,12 @@ export function useFactRelationships(factId: string) {
     queryKey: ["relationships", "fact", factId],
     queryFn: () => fetchFactRelationships(factId),
     enabled: !!factId,
+  });
+}
+
+export function useExtractionFailures(params?: { project_id?: string; document_id?: string; limit?: number }) {
+  return useQuery({
+    queryKey: ["extraction-failures", params],
+    queryFn: () => fetchExtractionFailures(params),
   });
 }
