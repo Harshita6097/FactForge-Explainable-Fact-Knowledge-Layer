@@ -6,6 +6,34 @@ log = get_logger("rule_extractor")
 
 _nlp = None
 
+# Sentences matching these patterns are skipped before any extraction
+_SKIP_SENTENCE_RE = re.compile(
+    r"""
+    ^\d+$                                      # bare page/volume number
+    |\d+\(\d+\):\d+[-–]\d+                    # journal citation e.g. 83(6):2411-2451
+    |^[\d/\s]+Data\b                           # table header artifact e.g. "1/ Data"
+    |^\s*\d+\s*/\s*\w                          # "3 / Something"
+    |\b(?:ibid|op\.?\s*cit|et\s+al\.?|pp?\.\s*\d)  # bibliographic markers
+    """,
+    re.IGNORECASE | re.VERBOSE,
+)
+
+# DATE entity values that are relative/vague — not absolute periods
+_RELATIVE_DATE_TERMS = frozenset([
+    "this year", "last year", "next year", "recent", "recently",
+    "seasonally", "annual", "annually", "one-month-ahead", "short-term",
+    "long-term", "recent decades", "historically", "over time",
+    "in the past", "going forward", "near term", "medium term",
+])
+
+# Entity strings that look like bibliographic artifacts
+_BIBLIO_ENTITY_RE = re.compile(
+    r'^\d+$'           # pure number
+    r'|\d+\(\d+\)'     # volume(issue) format
+    r'|^[A-Z]{1,3}\d'  # e.g. "B3", "IMF2"
+    r'|\d+[-–]\d{4,}'  # page range
+)
+
 # Patterns for numeric values with units
 _MONEY_RE = re.compile(
     r"(?:₹|Rs\.?\s*|INR\s*|USD\s*|\$\s*)?(\d[\d,]*\.?\d*)\s*"
@@ -56,6 +84,15 @@ _ATTR_KEYWORDS = [
 ]
 
 
+# Sentences that describe demographic, geographic, or disaster impact data
+# — must not be reclassified as employee counts or financial metrics
+_DEMOGRAPHIC_RE = re.compile(
+    r'\b(urban|rural|household|houses?\s+damaged|families|population|district|village|'
+    r'beneficiar|flood|cyclone|drought|disaster|affected\s+area|crop\s+loss|'
+    r'mortality|morbidity|literacy|poverty|below\s+poverty)\b',
+    re.IGNORECASE,
+)
+
 # Capitalized word that looks like a proper noun (company/person name)
 _PROPER_NOUN_RE = re.compile(r'\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)\b')
 
@@ -77,6 +114,28 @@ def _detect_attribute(sentence: str) -> str:
     return "Metric"
 
 
+def _detect_attribute_for_match(sentence: str, match_start: int, match_end: int) -> str:
+    """
+    Detect attribute using only the clause immediately surrounding a numeric match.
+    Looks at a 120-char window centred on the match to avoid associating a number
+    with a header or category name from a different part of the sentence.
+    """
+    window_start = max(0, match_start - 80)
+    window_end = min(len(sentence), match_end + 40)
+    clause = sentence[window_start:window_end]
+    attr = _detect_attribute(clause)
+    # Fall back to full sentence if clause gives no signal
+    return attr if attr != "Metric" else _detect_attribute(sentence)
+
+
+def _is_absolute_date(date_text: str) -> bool:
+    """Return True only if the date resolves to a specific year/period."""
+    lower = date_text.lower().strip()
+    if any(term in lower for term in _RELATIVE_DATE_TERMS):
+        return False
+    return bool(re.search(r'\b(19|20)\d{2}\b|fy\s*\d{2,4}|q[1-4]\s*fy', lower, re.IGNORECASE))
+
+
 def _detect_period(sentence: str) -> str | None:
     m = _PERIOD_RE.search(sentence)
     if m:
@@ -90,21 +149,43 @@ def _get_sentences(text: str) -> list[str]:
     return [sent.text.strip() for sent in doc.sents if sent.text.strip()]
 
 
-def _extract_entity_from_sentence(sent_doc, doc_orgs: list[str], sentence: str) -> str | None:
+# Words that must never be returned as an entity name from the proper-noun fallback
+_ENTITY_SKIP = frozenset([
+    "the", "a", "an", "this", "that", "these", "those", "its", "their",
+    "net", "gross", "total", "operating", "adjusted", "reported", "based",
+    "profit", "loss", "revenue", "income", "ebitda", "margin", "growth",
+    "sales", "cost", "expense", "asset", "liability", "equity", "cash",
+    "debt", "capex", "dividend", "share", "stock", "return", "rate",
+    "quarter", "annual", "fiscal", "year", "period", "date", "page",
+    "india", "indian",  # too generic for financial docs — kept as GPE only
+])
+
+
+def _extract_entity_from_sentence(
+    sent_doc,
+    doc_orgs: list[str],
+    sentence: str,
+    doc_entity_hint: str | None = None,
+) -> str | None:
     """Return the most relevant ORG or PERSON entity from a sentence."""
+    # 1. spaCy NER
     for ent in sent_doc.ents:
         if ent.label_ in ("ORG", "PERSON", "GPE"):
             return ent.text.strip()
-    # Fall back to most frequent ORG in the document
+    # 2. Document-level entity hint (injected from PDF metadata/heading)
+    if doc_entity_hint:
+        hint_lower = doc_entity_hint.lower()
+        if hint_lower in sentence.lower():
+            return doc_entity_hint
+        # Even if not literally present, use as fallback before generic ORGs
+        return doc_entity_hint
+    # 3. Most frequent ORG across the full page
     if doc_orgs:
         return doc_orgs[0]
-    # Last resort: first capitalized proper noun in sentence
-    m = _PROPER_NOUN_RE.search(sentence)
-    if m:
+    # 4. Last resort: first capitalized proper noun, with strict skip list
+    for m in _PROPER_NOUN_RE.finditer(sentence):
         word = m.group(1)
-        skip = {"the", "a", "an", "this", "that", "these", "those", "its", "their",
-                "net", "gross", "total", "operating", "adjusted", "reported", "based"}
-        if word.lower() not in skip and len(word) > 2:
+        if word.lower() not in _ENTITY_SKIP and len(word) > 2:
             return word
     return None
 
@@ -113,21 +194,29 @@ def _extract_facts_from_sentence(
     sentence: str,
     page_number: int,
     doc_orgs: list[str],
+    doc_entity_hint: str | None = None,
 ) -> list[dict]:
+    # Skip demographic/geographic/disaster sentences — do not reclassify as
+    # employee counts or financial metrics (anti-hallucination rule)
+    if _DEMOGRAPHIC_RE.search(sentence):
+        return []
+
     nlp = _get_nlp()
     sent_doc = nlp(sentence)
     facts = []
     period = _detect_period(sentence)
-    attribute = _detect_attribute(sentence)
-    entity = _extract_entity_from_sentence(sent_doc, doc_orgs, sentence)
+    entity = _extract_entity_from_sentence(sent_doc, doc_orgs, sentence, doc_entity_hint)
 
-    if not entity:
+    if not entity or _BIBLIO_ENTITY_RE.search(entity):
         return []
 
-    # Money + unit matches
+    snippet = re.sub(r'\s+', ' ', sentence[:300]).strip()
+
+    # Money + unit matches — attribute scoped to clause around the match
     for m in _MONEY_RE.finditer(sentence):
         raw_value = m.group(0).strip()
         unit = m.group(2).strip()
+        attribute = _detect_attribute_for_match(sentence, m.start(), m.end())
         facts.append({
             "entity": entity,
             "attribute": attribute,
@@ -135,7 +224,7 @@ def _extract_facts_from_sentence(
             "unit": unit,
             "period": period,
             "confidence": 0.88,
-            "snippet": sentence[:300],
+            "snippet": snippet,
             "page_number": page_number,
         })
 
@@ -143,6 +232,7 @@ def _extract_facts_from_sentence(
     for m in _PERCENT_RE.finditer(sentence):
         raw_value = m.group(0).strip()
         unit = "%"
+        attribute = _detect_attribute_for_match(sentence, m.start(), m.end())
         facts.append({
             "entity": entity,
             "attribute": attribute,
@@ -150,7 +240,7 @@ def _extract_facts_from_sentence(
             "unit": unit,
             "period": period,
             "confidence": 0.85,
-            "snippet": sentence[:300],
+            "snippet": snippet,
             "page_number": page_number,
         })
 
@@ -158,6 +248,7 @@ def _extract_facts_from_sentence(
     for m in _PLAIN_NUM_RE.finditer(sentence):
         raw_value = m.group(0).strip()
         unit = m.group(2).strip()
+        attribute = _detect_attribute_for_match(sentence, m.start(), m.end())
         facts.append({
             "entity": entity,
             "attribute": attribute,
@@ -165,7 +256,7 @@ def _extract_facts_from_sentence(
             "unit": unit,
             "period": period,
             "confidence": 0.80,
-            "snippet": sentence[:300],
+            "snippet": snippet,
             "page_number": page_number,
         })
 
@@ -183,14 +274,70 @@ def _extract_facts_from_sentence(
                     "unit": None,
                     "period": period,
                     "confidence": 0.75,
+                    "snippet": snippet,
+                    "page_number": page_number,
+                })
+
+    # Fallback: if no numeric facts found, extract entity-relationship facts
+    # This handles non-financial PDFs (e.g. general reports, presentations)
+    if not facts and entity:
+        lower = sentence.lower()
+        # Location facts
+        for ent in sent_doc.ents:
+            if ent.label_ == "GPE" and ent.text.strip() != entity:
+                facts.append({
+                    "entity": entity,
+                    "attribute": "Location",
+                    "raw_value": ent.text.strip(),
+                    "unit": None,
+                    "period": period,
+                    "confidence": 0.70,
                     "snippet": sentence[:300],
+                    "page_number": page_number,
+                })
+                break
+        # Date facts — only accept absolute, resolvable dates
+        for ent in sent_doc.ents:
+            if ent.label_ == "DATE" and not period and _is_absolute_date(ent.text):
+                facts.append({
+                    "entity": entity,
+                    "attribute": "Date",
+                    "raw_value": ent.text.strip(),
+                    "unit": None,
+                    "period": ent.text.strip(),
+                    "confidence": 0.65,
+                    "snippet": snippet,
+                    "page_number": page_number,
+                })
+                break
+        # Key statement facts — sentences with ORG + action verbs
+        if not facts and len(sentence) > 30:
+            action_kws = ["provides", "offers", "operates", "develops", "manufactures",
+                          "launched", "announced", "partnered", "acquired", "raised",
+                          "aims", "focuses", "specializes", "serves", "supports"]
+            if any(kw in lower for kw in action_kws):
+                attr = _detect_attribute(sentence)
+                if attr == "Metric":
+                    attr = "Description"
+                facts.append({
+                    "entity": entity,
+                    "attribute": attr,
+                    "raw_value": re.sub(r'\s+', ' ', sentence[:150]).strip(),
+                    "unit": None,
+                    "period": period,
+                    "confidence": 0.60,
+                    "snippet": snippet,
                     "page_number": page_number,
                 })
 
     return facts
 
 
-def extract_facts_from_page(text: str, page_number: int) -> list[dict]:
+def extract_facts_from_page(
+    text: str,
+    page_number: int,
+    doc_entity_hint: str | None = None,
+) -> list[dict]:
     """Extract structured facts from a single page of text."""
     nlp = _get_nlp()
     doc = nlp(text[:50000])
@@ -209,7 +356,9 @@ def extract_facts_from_page(text: str, page_number: int) -> list[dict]:
         sentence = sent.text.strip()
         if len(sentence) < 15:
             continue
-        for fact in _extract_facts_from_sentence(sentence, page_number, doc_orgs):
+        if _SKIP_SENTENCE_RE.search(sentence):
+            continue
+        for fact in _extract_facts_from_sentence(sentence, page_number, doc_orgs, doc_entity_hint):
             key = f"{fact['entity']}|{fact['attribute']}|{fact['raw_value']}"
             if key not in seen:
                 seen.add(key)
@@ -219,10 +368,13 @@ def extract_facts_from_page(text: str, page_number: int) -> list[dict]:
     return facts
 
 
-def extract_facts_from_pages(pages: list[dict]) -> list[dict]:
+def extract_facts_from_pages(
+    pages: list[dict],
+    doc_entity_hint: str | None = None,
+) -> list[dict]:
     """Extract facts from a batch of pages."""
     all_facts = []
     for page in pages:
-        facts = extract_facts_from_page(page["text"], page["page_number"])
+        facts = extract_facts_from_page(page["text"], page["page_number"], doc_entity_hint)
         all_facts.extend(facts)
     return all_facts

@@ -65,13 +65,22 @@ def _period_type(period: Optional[str]) -> str:
 def build_timeline(
     entity: Optional[str] = None,
     attribute: Optional[str] = None,
+    project_id: Optional[str] = None,
+    document_id: Optional[str] = None,
 ) -> list[dict]:
     """
     Returns a list of timeline entries sorted chronologically.
-    Each entry groups all facts for a given period.
+    Scoped to document_id > project_id > all (in that priority order).
     """
     conditions = ["f.period IS NOT NULL"]
     params: list = []
+
+    if document_id:
+        conditions.append("f.document_id = ?")
+        params.append(document_id)
+    elif project_id:
+        conditions.append("d.project_id = ?")
+        params.append(project_id)
 
     if entity:
         conditions.append("LOWER(f.entity) LIKE ?")

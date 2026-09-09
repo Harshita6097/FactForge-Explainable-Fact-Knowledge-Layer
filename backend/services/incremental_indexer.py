@@ -53,8 +53,8 @@ def is_duplicate_document(filename: str, page_count: int) -> str | None:
 def get_existing_fact_fingerprints(document_id: str) -> set[str]:
     """
     Return a set of fingerprints for facts already stored for this document.
-    Fingerprint = entity|attribute|canonical_value|period
-    Used to skip storing duplicate facts within the same document.
+    Fingerprint = lower(entity)|lower(attribute)|canonical_value|lower(period)
+    Lowercased so entity-casing variants don't bypass deduplication.
     """
     with get_db() as conn:
         rows = conn.execute(
@@ -63,7 +63,7 @@ def get_existing_fact_fingerprints(document_id: str) -> set[str]:
             (document_id,),
         ).fetchall()
     return {
-        f"{r['entity']}|{r['attribute']}|{r['canonical_value']}|{r['period']}"
+        f"{r['entity'].lower()}|{r['attribute'].lower()}|{r['canonical_value']}|{(r['period'] or '').lower()}"
         for r in rows
     }
 
@@ -76,14 +76,14 @@ def is_fact_duplicate(
     existing_fingerprints: set[str],
 ) -> bool:
     """Check if this exact fact already exists in the current document."""
-    fp = f"{entity}|{attribute}|{canonical_value}|{period}"
+    fp = f"{entity.lower()}|{attribute.lower()}|{canonical_value}|{(period or '').lower()}"
     return fp in existing_fingerprints
 
 
 def get_new_facts_since_last_analysis(document_id: str) -> list[str]:
     """
     Return fact IDs from this document that have NOT yet been compared
-    in the relationships table. Used for incremental relationship analysis.
+    as a SOURCE in the relationships table (either direction).
     """
     with get_db() as conn:
         all_fact_ids = {
@@ -91,6 +91,7 @@ def get_new_facts_since_last_analysis(document_id: str) -> list[str]:
                 "SELECT id FROM facts WHERE document_id=?", (document_id,)
             ).fetchall()
         }
+        # A fact is considered analyzed if it appears as source_fact_id in any relationship
         analyzed_ids = {
             r["source_fact_id"] for r in conn.execute(
                 """SELECT DISTINCT source_fact_id FROM relationships r
@@ -104,6 +105,31 @@ def get_new_facts_since_last_analysis(document_id: str) -> list[str]:
     log.info("Incremental relationship check | doc=%s | new_facts=%d / total=%d",
              document_id, len(new_ids), len(all_fact_ids))
     return new_ids
+
+
+def reset_analysis_for_document(document_id: str) -> int:
+    """
+    Delete all relationships where source fact belongs to this document,
+    so analyze_document_relationships will re-run from scratch.
+    Returns count of deleted relationships.
+    """
+    with get_db() as conn:
+        fact_ids = [r[0] for r in conn.execute(
+            "SELECT id FROM facts WHERE document_id=?", (document_id,)
+        ).fetchall()]
+        if not fact_ids:
+            return 0
+        ph = ",".join("?" * len(fact_ids))
+        rel_ids = [r[0] for r in conn.execute(
+            f"SELECT id FROM relationships WHERE source_fact_id IN ({ph})",
+            fact_ids,
+        ).fetchall()]
+        if rel_ids:
+            rph = ",".join("?" * len(rel_ids))
+            conn.execute(f"DELETE FROM relationship_reasoning WHERE relationship_id IN ({rph})", rel_ids)
+            conn.execute(f"DELETE FROM relationships WHERE id IN ({rph})", rel_ids)
+        log.info("Reset analysis for doc=%s | deleted %d relationships", document_id, len(rel_ids))
+        return len(rel_ids)
 
 
 def compute_optimal_batch_size(pages: list[dict]) -> int:
