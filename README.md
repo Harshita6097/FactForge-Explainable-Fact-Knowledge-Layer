@@ -6,12 +6,6 @@ This is not a PDF summarizer or a generic RAG chatbot. The knowledge layer is th
 
 ---
 
-## Video Demo
-
-> 🎥 [Demo video link — to be added]
-
----
-
 ## Setup and Run Instructions
 
 ### Prerequisites
@@ -52,72 +46,93 @@ npm run dev
 # App running at http://localhost:3000
 ```
 
+### Environment Files
+
+```bash
+cp backend/.env.example backend/.env
+cp frontend/.env.local.example frontend/.env.local
+```
+
+The backend `.env` only needs `JWT_SECRET` set to any random string. No external API keys are required.
+
 ---
 
 ## Approach
 
-### The Core Idea
+### The Original Design — LLM Agent Architecture
 
-Important facts are scattered across documents, stated differently, and sometimes contradict each other. The goal was to build a system where every fact is a first-class object — not just a chunk of text — with its own identity, source evidence, canonical form, and relationships to other facts.
+The intended architecture was an LLM-orchestrated agent system with three agents:
 
-### Fact Extraction — Rule-Based, No LLM
+- An **extraction agent** would receive each PDF page and return structured JSON: `{ entity, attribute, value, period, confidence, evidence_snippet }`
+- A **relationship agent** would receive pairs of facts and classify them as corroborated / contradiction / reconciled / related, with a natural-language reasoning chain explaining each decision
+- A **chat agent** would answer questions in natural language prose with citations, grounded in the knowledge layer
 
-The initial design used Google Gemini for fact extraction. During development, the free tier quota (20 requests/day) was exhausted by a single 27-page PDF, making it unusable for any real workflow.
+This is the right architecture. LLMs handle implicit facts, ambiguous phrasing, table structure, and multi-sentence context in ways that regex cannot. The reasoning chains would be genuinely explanatory rather than template-filled.
 
-The replacement is a fully local, zero-quota extraction pipeline:
+**Why it was not built this way:** The Gemini free tier allows 20 requests/day — exhausted by a single 27-page PDF in one test run. Groq's free tier (14,400 req/day) sounds generous, but at one request per page the 100-page starter documents would consume the quota in a single session, and the relationship analysis phase would consume the rest. Paying for API access was not an option within the assignment constraints.
 
-- **spaCy `en_core_web_sm`** — NER for entity detection (ORG, PERSON, GPE). Falls back to a proper noun regex when spaCy misses company names not in its training data (e.g. "Delhivery")
-- **Regex patterns** — money values (`Rs/₹/INR/USD + crore/lakh/million/billion`), percentages, and operational units (employees, warehouses, cities, shipments)
-- **Period detection** — `FY2024`, `Q3 FY24`, `H1 2024`, `March 2024` — all caught with a single compiled pattern
+The decision was: build the system correctly as an architecture, implement the deterministic services that would sit underneath the LLM agents, and be honest about what the LLM layer would add.
+
+### What Was Actually Built
+
+A fully local, zero-quota pipeline that produces the same data model the LLM agent would have produced.
+
+**Fact Extraction — Rule-Based**
+
+- **spaCy `en_core_web_sm`** — NER for entity detection (ORG, PERSON, GPE). Falls back to a three-level hierarchy when spaCy misses domain-specific names (e.g. "Delhivery" is not in its training data):
+  1. spaCy NER
+  2. Most frequent ORG across the full page
+  3. First capitalized proper noun, excluding common financial adjectives
+- **Regex patterns** — money values (`Rs/₹/INR/USD + crore/lakh/million/billion`), percentages, operational units (employees, warehouses, cities, shipments)
+- **Period detection** — `FY2024`, `Q3 FY24`, `H1 2024`, `March 2024` — single compiled pattern
 - **Attribute classification** — 27 keyword-mapped attribute types (Revenue, EBITDA, Net Profit, Employees, Warehouses, etc.)
-- **Per-page deduplication** — `entity|attribute|value` fingerprint prevents duplicate facts within a document
+- **Demographic guard** — sentences about population, casualties, disasters are skipped before extraction
+- **Clause-scoped detection** — attribute keywords are matched within an 80-character window around each numeric match, not across the full sentence
 
-This runs in milliseconds per page, works offline, and never hits a rate limit.
+**Relationship Detection — Fully Deterministic**
 
-### Relationship Detection — Fully Deterministic
+All four criteria must be satisfied before any classification:
 
-Relationships between facts are detected with pure logic — no LLM involved at any stage:
+1. Entity match (same canonical entity)
+2. Attribute match (same canonical attribute)
+3. Period match (same fiscal period)
+4. Unit compatibility (`%` vs `INR` are never compared)
 
-- **Corroborated** — same entity, same attribute, same period, values within 5% tolerance
-- **Contradiction** — same entity, same attribute, same period, values differ beyond tolerance
-- **Reconciled** — same entity, same attribute, different periods (temporal change, not a real conflict)
+Relationship types:
+- **Corroborated** — all four match, values within tolerance (5% for financials, exact for headcount, 0.1–0.2% for macro rates)
+- **Contradiction** — all four match, values differ beyond tolerance
+- **Reconciled** — entity + attribute match, periods differ (temporal change, not a real conflict)
 - **Related** — different entities, same attribute (benchmark comparison)
 
-Per-attribute tolerances are configured separately — headcount requires exact match, financial figures allow 5%, macroeconomic rates allow 0.1-0.2%.
+Every relationship includes a step-by-step reasoning chain built deterministically from the fact data: entity match → attribute match → period comparison → unit compatibility → value comparison → classification.
 
-Every relationship includes a step-by-step reasoning chain (entity match → attribute match → period comparison → value comparison → source documents → classification) built deterministically from the fact data.
+**Semantic Similarity — Local Embeddings**
 
-### Semantic Similarity — Local Embeddings
+FAISS similarity search uses `sentence-transformers/all-MiniLM-L6-v2` (384-dim, runs locally). Embeddings are computed once per fact and persisted to disk. The relationship engine uses FAISS to find candidate pairs before running deterministic checks, keeping the comparison space manageable as the knowledge layer grows.
 
-FAISS similarity search uses `sentence-transformers/all-MiniLM-L6-v2` (384-dim, runs locally). Embeddings are computed once per fact and persisted to disk — no recomputation on restart. The relationship engine uses FAISS to find candidate fact pairs before running deterministic checks, keeping the comparison space manageable as the knowledge layer grows.
-
-### Canonicalization
+**Canonicalization**
 
 Before storage, every fact is normalized:
 - Units: `2192 crore` → `21920000000` (base value in rupees)
 - Periods: `FY24`, `FY 2024`, `2023-24` → `FY2024`
 - Attributes: `turnover`, `net sales`, `income from operations` → `Revenue`
 
-This ensures facts from different documents can be compared even when expressed differently.
-
-### Chat — Structured Fact Retrieval
+**Chat — Structured Fact Retrieval**
 
 Chat uses FAISS semantic search to retrieve the most relevant facts for a question, then formats them as a structured response with entity, attribute, value, source document, and page number. Every answer includes a CITATIONS section. No LLM is involved — the answer is assembled directly from the knowledge layer.
 
-### Dynamic Schema
+**Dynamic Schema**
 
-There is no hardcoded list of attributes. Every attribute the extractor discovers is registered in `attribute_registry` with a canonical form and occurrence count. The system works identically for financial reports, legal documents, medical data, or any other domain.
+There is no hardcoded list of attributes. Every attribute the extractor discovers is registered in `attribute_registry` with a canonical form and occurrence count. The system works identically for financial reports, legal documents, or medical data.
 
-### Incremental Indexing
+**Incremental Indexing**
 
 - `document_pages.processed` flag — pages are never re-processed
 - Fact fingerprints (`entity|attribute|value|period`) — duplicate facts are skipped
 - Relationship engine only analyzes facts not yet present as a source in the relationships table
 - Re-uploading a completed document returns the existing record immediately
 
----
-
-## Architecture
+### Architecture
 
 ```
 factforge/
@@ -129,13 +144,14 @@ factforge/
 │   │   ├── timeline.py             # Chronological fact grouping
 │   │   ├── chat.py                 # Knowledge-grounded Q&A
 │   │   ├── knowledge.py            # Canonical facts layer
+│   │   ├── cases.py                # Four required cases endpoint
 │   │   └── progress.py             # SSE live processing stream
 │   ├── agents/
 │   │   └── qa_agent.py             # FAISS retrieval → structured answer
 │   ├── services/
 │   │   ├── document_processor.py   # PyMuPDF page extraction
-│   │   ├── rule_extractor.py       # spaCy + regex fact extraction (local)
-│   │   ├── local_embedder.py       # sentence-transformers embeddings (local)
+│   │   ├── rule_extractor.py       # spaCy + regex fact extraction
+│   │   ├── local_embedder.py       # sentence-transformers embeddings
 │   │   ├── fact_miner.py           # Orchestrates extraction + storage
 │   │   ├── canonicalizer.py        # Unit/period/alias normalization
 │   │   ├── relationship_engine.py  # Deterministic relationship detection
@@ -143,22 +159,27 @@ factforge/
 │   │   ├── knowledge_layer.py      # Canonical fact merging
 │   │   ├── timeline_service.py     # Chronological grouping
 │   │   └── incremental_indexer.py  # Deduplication + incremental processing
+│   ├── prompts/                    # Prompt templates (ready for LLM integration)
 │   ├── models/                     # Pydantic request/response models
 │   ├── database/                   # SQLite connection + schema + migrations
-│   └── utils/                      # Config, logger, rate limiter
+│   └── utils/                      # Config, logger, auth, rate limiter
 │
-└── frontend/                       # Next.js 15 application
-    ├── app/
-    │   ├── page.tsx                # Dashboard with live stats
-    │   ├── upload/                 # Drag-and-drop upload with SSE progress
-    │   ├── facts/                  # Fact explorer + canonical fact detail
-    │   ├── relationships/          # Relationship explorer with reasoning chain
-    │   ├── timeline/               # Chronological timeline
-    │   └── chat/                   # Knowledge-grounded chat with citations
-    ├── components/                 # Reusable UI components
-    ├── hooks/                      # React Query + SSE hooks
-    ├── lib/api/                    # Typed API client
-    └── types/                      # Shared TypeScript interfaces
+├── frontend/                       # Next.js 15 application
+│   ├── app/
+│   │   ├── page.tsx                # Dashboard with live stats
+│   │   ├── upload/                 # Drag-and-drop upload with SSE progress
+│   │   ├── facts/                  # Fact explorer + canonical fact detail
+│   │   ├── relationships/          # Relationship explorer with reasoning chain
+│   │   ├── timeline/               # Chronological timeline
+│   │   └── chat/                   # Knowledge-grounded chat with citations
+│   ├── components/                 # Reusable UI components
+│   ├── hooks/                      # React Query + SSE hooks
+│   ├── lib/api/                    # Typed API client
+│   └── types/                      # Shared TypeScript interfaces
+│
+└── starter-datasets/               # Sample PDFs for testing
+    ├── delhivery/                  # Prospectus, annual report, earnings presentation
+    └── india-macroeconomy/         # Economic Survey, RBI Annual Report, IMF Article IV
 ```
 
 ### Processing Pipeline
@@ -170,11 +191,11 @@ PyMuPDF — page-by-page text extraction (preserves page numbers)
     ↓
 Store pages in document_pages (processed=0)
     ↓
-rule_extractor — spaCy NER + regex per page
+rule_extractor — demographic guard → spaCy NER + regex per page
     ↓
 Canonicalization — units, periods, attribute aliases
     ↓
-Deduplication — fingerprint check
+Deduplication — fingerprint check (entity|attribute|value|period)
     ↓
 Store facts + evidence (entity, attribute, value, page, snippet)
     ↓
@@ -182,67 +203,32 @@ local_embedder — sentence-transformers embedding per fact
     ↓
 FAISS similarity search — find candidate fact pairs
     ↓
-Deterministic relationship detection — corroboration/contradiction/reconciliation
+Deterministic relationship detection — all-four-criteria enforcement
     ↓
-Template-based explanation + reasoning chain stored
+Template-based reasoning chain stored
     ↓
 SSE progress stream updated throughout
 ```
 
----
+### Key Engineering Decisions
 
-## Database Schema
+**No LLM for extraction** — The original design used Gemini. The free tier limit was exhausted by a single 27-page PDF. Rather than switching to a paid tier, extraction was rebuilt as a local rule-based system. The trade-off is real: LLMs extract implicit and contextual facts that regex cannot. But for structured financial documents with consistent patterns, rule-based extraction is fast, deterministic, and reliable.
 
-| Table | Purpose |
-|---|---|
-| `documents` | Uploaded PDFs with processing status |
-| `document_pages` | Raw page text with `processed` flag for incremental indexing |
-| `facts` | Extracted facts with canonical values |
-| `evidence` | Page + snippet linking every fact to its source |
-| `relationships` | Cross-document corroboration, contradiction, reconciliation |
-| `relationship_reasoning` | Step-by-step reasoning chain per relationship |
-| `attribute_registry` | Dynamically discovered attributes with occurrence counts |
-| `canonical_facts` | Merged facts across documents with conflict counts |
-| `chat_sessions` | Chat session metadata |
-| `chat_messages` | Full message history with citations |
+**Deterministic relationship detection** — LLMs are non-deterministic; the same two facts could be classified differently on different runs. Corroboration, contradiction, and reconciliation have clear logical definitions. Implementing them deterministically means the reasoning is fully auditable and reproducible.
 
----
+**SQLite** — Zero infrastructure overhead. WAL mode enables concurrent reads during background processing. The entire knowledge layer is a single portable file. PostgreSQL would be needed for concurrent multi-user production use.
 
-## Tech Stack
+**FAISS locally** — Avoids external vector database costs and latency. `IndexFlatIP` with cosine normalization gives exact nearest-neighbor search. The index is persisted to disk and loaded incrementally.
 
-| Layer | Technology |
-|---|---|
-| Frontend | Next.js 15, TypeScript, Tailwind CSS, shadcn/ui, React Query, Framer Motion |
-| Backend | FastAPI, Python 3.9+, Pydantic v2, Uvicorn |
-| Fact Extraction | spaCy `en_core_web_sm` + regex (fully local) |
-| Embeddings | sentence-transformers `all-MiniLM-L6-v2` (fully local, 384-dim) |
-| PDF Parsing | PyMuPDF (fitz) |
-| Vector Search | FAISS `IndexFlatIP` with cosine normalization |
-| Storage | SQLite (WAL mode) |
-| Deployment | Vercel (frontend), Render (backend) |
+**sentence-transformers over a cloud embedding API** — No quota, no latency, no cost. `all-MiniLM-L6-v2` is 90MB, downloads once, and runs in ~5ms per embedding on CPU.
 
-**No external AI API required. No API keys. No rate limits.**
+### AI Tools Used in Development
 
----
+- **Amazon Q Developer (IDE)** — used throughout development for code generation, debugging, and architectural decisions. All significant implementation was done with Amazon Q assistance.
+- **spaCy `en_core_web_sm`** — NER model for entity detection at runtime
+- **sentence-transformers `all-MiniLM-L6-v2`** — embedding model for semantic similarity at runtime
 
-## API Reference
-
-| Method | Endpoint | Description |
-|---|---|---|
-| POST | `/api/documents/upload` | Upload a PDF |
-| GET | `/api/documents` | List all documents |
-| GET | `/api/documents/{id}/status` | Processing status |
-| GET | `/api/documents/{id}/progress` | SSE live progress stream |
-| GET | `/api/facts` | List facts (filterable by document, attribute, entity) |
-| GET | `/api/facts/stats` | Dashboard counts |
-| GET | `/api/facts/{id}` | Fact with full evidence |
-| GET | `/api/relationships` | List relationships |
-| GET | `/api/relationships/summary` | Counts by type |
-| GET | `/api/timeline` | Chronological fact timeline |
-| POST | `/api/chat` | Ask a question against the knowledge layer |
-| GET | `/api/attributes` | Discovered attribute registry |
-
-Full interactive docs at `/docs` when running locally.
+No generative AI API is called at runtime. All extraction, relationship detection, and response generation is deterministic.
 
 ---
 
@@ -265,63 +251,108 @@ Two revenue figures that look contradictory but cover different fiscal years (e.
 2. Most frequent ORG across the full page (document-level context)
 3. First capitalized proper noun in the sentence, excluding common financial adjectives (Net, Gross, Total, Operating)
 
-**What would improve it:** Fine-tuning spaCy on financial documents, or using a larger model (`en_core_web_lg`) which has better coverage of company names. Alternatively, extracting the document title/company name from the PDF metadata and injecting it as a known entity hint before processing.
+**What would improve it:** Fine-tuning spaCy on financial documents, or using `en_core_web_lg` which has better coverage of company names. Alternatively, extracting the document title/company name from PDF metadata and injecting it as a known entity hint before processing.
 
 ---
 
-## Engineering Decisions
+## Database Schema
 
-### Why no LLM for extraction?
-The original design used Gemini. The free tier limit of 20 requests/day was exhausted by a single 27-page PDF during development. Rather than switching to a paid tier or a different LLM API, the extraction was rebuilt as a local rule-based system. This has a real trade-off: LLMs extract implicit and contextual facts that regex cannot. But for structured financial documents with consistent patterns, rule-based extraction is fast, deterministic, and reliable — and it never fails due to quota.
+| Table | Purpose |
+|---|---|
+| `documents` | Uploaded PDFs with processing status |
+| `document_pages` | Raw page text with `processed` flag for incremental indexing |
+| `facts` | Extracted facts with canonical values |
+| `evidence` | Page + snippet linking every fact to its source |
+| `relationships` | Cross-document and intra-document corroboration, contradiction, reconciliation |
+| `relationship_reasoning` | Step-by-step reasoning chain per relationship |
+| `attribute_registry` | Dynamically discovered attributes with occurrence counts |
+| `canonical_facts` | Merged facts across documents with conflict counts |
+| `chat_sessions` | Chat session metadata |
+| `chat_messages` | Full message history with citations |
+| `projects` | User-scoped project groupings |
+| `extraction_failures` | Pages where extraction produced no facts |
 
-### Why deterministic relationship detection?
-LLMs are non-deterministic — the same two facts could be classified differently on different runs. Corroboration, contradiction, and reconciliation have clear logical definitions. Implementing them deterministically means the reasoning is fully auditable and reproducible. The step-by-step reasoning chain is built from the same logic that made the classification decision, so it is always consistent.
+---
 
-### Why SQLite?
-Zero infrastructure overhead. WAL mode enables concurrent reads during background processing. The entire knowledge layer is a single portable file. For a prototype at this scale, it is the right choice. PostgreSQL would be needed for concurrent multi-user production use.
+## Tech Stack
 
-### Why FAISS locally?
-Avoids external vector database costs and latency. `IndexFlatIP` with cosine normalization gives exact nearest-neighbor search. The index is persisted to disk and loaded incrementally — no rebuild on restart.
+| Layer | Technology |
+|---|---|
+| Frontend | Next.js 15, TypeScript, Tailwind CSS, shadcn/ui, React Query, Framer Motion |
+| Backend | FastAPI, Python 3.9+, Pydantic v2, Uvicorn |
+| Fact Extraction | spaCy `en_core_web_sm` + regex (fully local) |
+| Embeddings | sentence-transformers `all-MiniLM-L6-v2` (fully local, 384-dim) |
+| PDF Parsing | PyMuPDF (fitz) |
+| Vector Search | FAISS `IndexFlatIP` with cosine normalization |
+| Storage | SQLite (WAL mode) |
+| Auth | JWT (local, no external provider) |
+| Deployment | Vercel (frontend), Render (backend) |
 
-### Why sentence-transformers over a cloud embedding API?
-Same reason as extraction — no quota, no latency, no cost. `all-MiniLM-L6-v2` is 90MB, downloads once, and runs in ~5ms per embedding on CPU.
+**No external AI API required. No API keys. No rate limits.**
+
+---
+
+## API Reference
+
+| Method | Endpoint | Description |
+|---|---|---|
+| POST | `/api/documents/upload` | Upload a PDF |
+| GET | `/api/documents` | List all documents |
+| GET | `/api/documents/{id}/status` | Processing status |
+| GET | `/api/documents/{id}/progress` | SSE live progress stream |
+| POST | `/api/documents/{id}/analyze` | Re-run relationship analysis (`?reset=true` to clear existing) |
+| GET | `/api/facts` | List facts (filterable by document, attribute, entity) |
+| GET | `/api/facts/stats` | Dashboard counts |
+| GET | `/api/facts/{id}` | Fact with full evidence |
+| GET | `/api/relationships` | List relationships |
+| GET | `/api/relationships/summary` | Counts by type |
+| GET | `/api/timeline` | Chronological fact timeline |
+| POST | `/api/chat` | Ask a question against the knowledge layer |
+| GET | `/api/attributes` | Discovered attribute registry |
+| GET | `/api/cases` | The four required cases with live examples |
+
+Full interactive docs at `/docs` when running locally.
 
 ---
 
 ## Limitations and Next Steps
 
-### Current Limitations
+### What Does Not Work Well
 
-- **Entity detection accuracy** — spaCy `en_core_web_sm` misses domain-specific company names. The proper noun fallback works but can pick incorrect words in complex sentences
-- **Table extraction** — financial tables extracted by PyMuPDF often produce rows like `Revenue 2,192 3,456` with no sentence structure. The regex matches the numbers but attribute/entity assignment is weaker
-- **Implicit facts** — rule-based extraction only captures explicitly stated values. An LLM would also extract implied facts ("revenue grew 23% YoY" → both the growth rate and the implied prior year value)
-- **Chat is structured, not conversational** — responses are formatted fact lists, not natural language prose. No conversational context across turns
-- **Single-language** — extraction patterns are English-only
+- **Entity detection accuracy** — spaCy `en_core_web_sm` misses domain-specific company names. The proper noun fallback works but can pick incorrect words in complex sentences. Estimated wrong entity assignment rate: 15–25% of extracted facts.
+- **Table extraction** — financial tables extracted by PyMuPDF often produce rows like `Revenue 2,192 3,456` with no sentence structure. The regex matches the numbers but attribute/entity assignment is weaker for table-sourced facts.
+- **Implicit facts** — rule-based extraction only captures explicitly stated values. "Revenue grew 23% YoY" extracts the growth rate but not the implied prior-year absolute value.
+- **Chat is structured, not conversational** — responses are formatted fact lists, not natural language prose. No conversational context across turns. This is the most visible gap from the intended LLM-agent design.
+- **Confidence scores are not calibrated** — the hardcoded values (0.95 for corroborated, 0.90 for contradiction) are placeholders. A real system would derive confidence from extraction quality signals.
+- **Single-language** — extraction patterns are English-only.
+- **No LLM at runtime** — the chat experience is structured retrieval, not natural language generation. This is the direct consequence of the quota constraint.
 
-### Next Steps
+### What Would Be Built Next
 
-- Replace `en_core_web_sm` with `en_core_web_lg` or a finance-domain NER model for better entity coverage
-- Add PDF metadata extraction (title, author) to seed the entity hint before page processing
-- Integrate an optional LLM (Groq free tier: 14,400 req/day) as an enhancement layer on top of rule extraction — rules run first, LLM fills gaps
-- OCR support via pytesseract for scanned PDFs
-- Fact confidence recalibration — corroborated facts get higher confidence, contradicted facts get lower
-- Export knowledge layer as JSON/CSV
-- PostgreSQL + pgvector for production multi-user scale
+1. **LLM extraction layer** — Groq `llama-3.1-8b-instant` as an optional enhancement on top of rule extraction. Rules run first; LLM fills gaps for sentences where rules produced no facts. This keeps quota usage low while improving coverage.
+2. **Finance-domain NER** — Replace `en_core_web_sm` with a model fine-tuned on financial documents, or use PDF metadata (title, author) to seed known entity names before page processing. A custom-trained NER model on financial filings would be a meaningful accuracy improvement — this is a tractable fine-tuning task, not a theoretical one.
+3. **Natural language chat** — Replace the structured formatter in `qa_agent.py` with an LLM call that receives the retrieved facts as context and generates a prose answer.
+4. **Confidence recalibration** — Corroborated facts get higher confidence; contradicted facts get lower. Confidence should reflect extraction quality, not be hardcoded.
+5. **OCR support** — pytesseract for scanned PDFs.
+6. **Export** — Knowledge layer as JSON/CSV for downstream use.
+7. **PostgreSQL + pgvector** — For production multi-user scale.
 
 ---
 
 ## Additional Notes
 
-The system is designed to generalize. There are no hardcoded facts, filenames, entity names, or document-specific rules anywhere in the codebase. The attribute registry grows dynamically with every new PDF. The relationship engine works on any domain — financial reports, legal documents, medical records — as long as facts share entities and attributes.
+### Honesty About the Approach
 
-The most interesting engineering constraint was the quota problem. Hitting a hard wall mid-development forced a decision: pay for API access, switch providers, or build locally. Building locally turned out to produce a more robust system — faster, auditable, and with no external dependencies.
+The system was designed as an LLM-agent architecture and rebuilt as a deterministic pipeline when the quota constraint made the LLM approach unworkable. The data model, API surface, and frontend are all designed for the LLM version — the `prompts/` directory contains the prompt templates that would be used, and `qa_agent.py` is structured to swap in an LLM call with minimal changes. The rule-based services are the fallback implementation, not the intended one.
 
----
+The extraction accuracy is lower than an LLM would achieve. The chat experience is structured retrieval, not natural language. The reasoning chains are template-filled, not generated. These are real limitations that would be resolved by the LLM layer.
 
-## AI Tools Used in Development
+What the deterministic implementation does well: it is fast, auditable, reproducible, and works offline with no external dependencies. The relationship detection logic is correct — the four-criteria enforcement, unit compatibility guard, and per-attribute tolerances produce reliable classifications on the facts that are correctly extracted.
 
-- **Amazon Q (IDE)** — used throughout development for code generation, debugging, and architectural decisions
-- **spaCy `en_core_web_sm`** — NER model for entity detection at runtime
-- **sentence-transformers `all-MiniLM-L6-v2`** — embedding model for semantic similarity at runtime
+### Generalization
 
-No generative AI API is called at runtime. All extraction, relationship detection, and response generation is deterministic.
+There are no hardcoded facts, filenames, entity names, or document-specific rules anywhere in the codebase. The attribute registry grows dynamically with every new PDF. The relationship engine works on any domain — financial reports, legal documents, medical records — as long as facts share entities and attributes.
+
+### The Quota Problem as a Design Constraint
+
+Hitting a hard wall mid-development forced a decision: pay for API access, switch providers, or build locally. Building locally produced a more robust system in some ways — faster, auditable, no external dependencies — but it is not the right long-term answer for a system whose core value proposition is intelligent fact extraction. The honest next step is to integrate an LLM with a usage strategy that keeps costs manageable: batch processing, response caching, and a rules-first approach where the LLM only handles sentences that rules could not resolve.
