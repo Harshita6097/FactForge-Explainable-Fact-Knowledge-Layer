@@ -14,6 +14,8 @@ router = APIRouter()
 class ChatRequest(BaseModel):
     question: str
     session_id: str | None = None
+    project_id: str | None = None
+    document_ids: list[str] | None = None  # explicit scope: only answer from these docs
 
 
 class ChatResponse(BaseModel):
@@ -26,7 +28,7 @@ class ChatResponse(BaseModel):
     conflicts: list[dict] = []
 
 
-def _get_or_create_session(session_id: str | None) -> str:
+def _get_or_create_session(session_id: str | None, project_id: str | None = None) -> str:
     with get_db() as conn:
         if session_id:
             row = conn.execute(
@@ -37,8 +39,8 @@ def _get_or_create_session(session_id: str | None) -> str:
 
         new_id = str(uuid.uuid4())
         conn.execute(
-            "INSERT INTO chat_sessions (id, created_at) VALUES (?, ?)",
-            (new_id, datetime.now(timezone.utc).isoformat()),
+            "INSERT INTO chat_sessions (id, created_at, project_id) VALUES (?, ?, ?)",
+            (new_id, datetime.now(timezone.utc).isoformat(), project_id),
         )
         return new_id
 
@@ -66,14 +68,16 @@ def chat(request: ChatRequest):
     if not request.question.strip():
         raise HTTPException(status_code=400, detail="Question cannot be empty")
 
-    session_id = _get_or_create_session(request.session_id)
-    log.info("Chat | session=%s | question=%s", session_id[:8], request.question[:80])
+    session_id = _get_or_create_session(request.session_id, request.project_id)
+    log.info("Chat | session=%s | project=%s | question=%s", session_id[:8], request.project_id, request.question[:80])
 
-    # Save user message
     _save_message(session_id, "user", request.question)
 
-    # Get answer from QA agent
-    result = answer_question(request.question)
+    result = answer_question(
+        request.question,
+        project_id=request.project_id,
+        document_ids=request.document_ids,
+    )
 
     # Save assistant message
     msg_id = _save_message(
