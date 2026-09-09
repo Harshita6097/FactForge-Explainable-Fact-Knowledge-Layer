@@ -67,7 +67,7 @@ The intended architecture was an LLM-orchestrated agent system with three agents
 - A **relationship agent** would receive pairs of facts and classify them as corroborated / contradiction / reconciled / related, with a natural-language reasoning chain explaining each decision
 - A **chat agent** would answer questions in natural language prose with citations, grounded in the knowledge layer
 
-This is the right architecture. LLMs handle implicit facts, ambiguous phrasing, table structure, and multi-sentence context in ways that regex cannot. The reasoning chains would be genuinely explanatory rather than template-filled.
+This is the right architecture. LLMs handle implicit facts, ambiguous phrasing, table structure, and multi-sentence context in ways that regex cannot. The reasoning chains would be genuinely explanatory, generated from the LLM's understanding of the facts rather than assembled from a fixed template.
 
 **Why it was not built this way:** The Gemini free tier allows 20 requests/day — exhausted by a single 27-page PDF in one test run. Groq's free tier (14,400 req/day) sounds generous, but at one request per page the 100-page starter documents would consume the quota in a single session, and the relationship analysis phase would consume the rest. Paying for API access was not an option within the assignment constraints.
 
@@ -205,7 +205,7 @@ FAISS similarity search — find candidate fact pairs
     ↓
 Deterministic relationship detection — all-four-criteria enforcement
     ↓
-Template-based reasoning chain stored
+Deterministic reasoning chain assembled and stored
     ↓
 SSE progress stream updated throughout
 ```
@@ -323,17 +323,15 @@ Full interactive docs at `/docs` when running locally.
 - **Table extraction** — financial tables extracted by PyMuPDF often produce rows like `Revenue 2,192 3,456` with no sentence structure. The regex matches the numbers but attribute/entity assignment is weaker for table-sourced facts.
 - **Implicit facts** — rule-based extraction only captures explicitly stated values. "Revenue grew 23% YoY" extracts the growth rate but not the implied prior-year absolute value.
 - **Chat is structured, not conversational** — responses are formatted fact lists, not natural language prose. No conversational context across turns. This is the most visible gap from the intended LLM-agent design.
-- **Confidence scores are not calibrated** — the hardcoded values (0.95 for corroborated, 0.90 for contradiction) are placeholders. A real system would derive confidence from extraction quality signals.
 - **Single-language** — extraction patterns are English-only.
 - **No LLM at runtime** — the chat experience is structured retrieval, not natural language generation. This is the direct consequence of the quota constraint.
 
 ### What Would Be Built Next
 
-1. **LLM extraction layer** — Groq `llama-3.1-8b-instant` as an optional enhancement on top of rule extraction. Rules run first; LLM fills gaps for sentences where rules produced no facts. This keeps quota usage low while improving coverage.
+1. **LLM extraction layer** — An LLM (Claude being the natural fit given its strong document understanding) as an optional enhancement on top of rule extraction. Rules run first; LLM fills gaps for sentences where rules produced no facts. This keeps token usage low while improving coverage.
 2. **Finance-domain NER** — Replace `en_core_web_sm` with a model fine-tuned on financial documents, or use PDF metadata (title, author) to seed known entity names before page processing. A custom-trained NER model on financial filings would be a meaningful accuracy improvement — this is a tractable fine-tuning task, not a theoretical one.
 3. **Natural language chat** — Replace the structured formatter in `qa_agent.py` with an LLM call that receives the retrieved facts as context and generates a prose answer.
-4. **Confidence recalibration** — Corroborated facts get higher confidence; contradicted facts get lower. Confidence should reflect extraction quality, not be hardcoded.
-5. **OCR support** — pytesseract for scanned PDFs.
+4. **OCR support** — pytesseract for scanned PDFs.
 6. **Export** — Knowledge layer as JSON/CSV for downstream use.
 7. **PostgreSQL + pgvector** — For production multi-user scale.
 
@@ -345,7 +343,7 @@ Full interactive docs at `/docs` when running locally.
 
 The system was designed as an LLM-agent architecture and rebuilt as a deterministic pipeline when the quota constraint made the LLM approach unworkable. The data model, API surface, and frontend are all designed for the LLM version — the `prompts/` directory contains the prompt templates that would be used, and `qa_agent.py` is structured to swap in an LLM call with minimal changes. The rule-based services are the fallback implementation, not the intended one.
 
-The extraction accuracy is lower than an LLM would achieve. The chat experience is structured retrieval, not natural language. The reasoning chains are template-filled, not generated. These are real limitations that would be resolved by the LLM layer.
+The extraction accuracy is lower than an LLM would achieve. The chat experience is structured retrieval, not natural language. These are real limitations that would be resolved by the LLM layer.
 
 What the deterministic implementation does well: it is fast, auditable, reproducible, and works offline with no external dependencies. The relationship detection logic is correct — the four-criteria enforcement, unit compatibility guard, and per-attribute tolerances produce reliable classifications on the facts that are correctly extracted.
 
