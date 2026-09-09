@@ -99,6 +99,14 @@ _Q_PERIOD = re.compile(r"\bq([1-4])\s*fy\s*(\d{2,4})\b", re.IGNORECASE)
 _YEAR_ONLY = re.compile(r"\b(19|20)(\d{2})\b")
 _YEAR_RANGE = re.compile(r"\b(20\d{2})[/-](20\d{2}|\d{2})\b")
 
+# Relative/vague period strings that must not be stored as canonical periods
+_RELATIVE_PERIOD_RE = re.compile(
+    r'\b(this year|last year|next year|recent(?:ly)?|annually?|seasonal(?:ly)?|'
+    r'one.month.ahead|short.term|long.term|recent decades|'
+    r'historically|over time|in the past|going forward|near term|medium term)\b',
+    re.IGNORECASE,
+)
+
 
 def normalize_period(period: Optional[str]) -> Optional[str]:
     """Normalize period strings to a canonical form."""
@@ -107,6 +115,9 @@ def normalize_period(period: Optional[str]) -> Optional[str]:
 
     p = period.strip()
 
+    # Reject relative/vague periods immediately
+    if _RELATIVE_PERIOD_RE.search(p):
+        return None
     # Q1 FY24 → Q1 FY2024
     m = _Q_PERIOD.search(p)
     if m:
@@ -172,6 +183,14 @@ def _parse_number(value: str) -> Optional[float]:
     return None
 
 
+# Bibliographic/artifact value patterns that must not be stored
+_BIBLIO_VALUE_RE = re.compile(
+    r'^\d{4,5}$'        # bare 4-5 digit number (volume/page number)
+    r'|\d+\(\d+\):\d+'  # journal citation format e.g. 83(6):2411
+    r'|^[A-Z]\d+$'      # e.g. "B3475"
+)
+
+
 def normalize_value(raw_value: str, unit: Optional[str]) -> tuple[Optional[str], Optional[str]]:
     """
     Returns (canonical_value, canonical_unit).
@@ -180,6 +199,10 @@ def normalize_value(raw_value: str, unit: Optional[str]) -> tuple[Optional[str],
     """
     if not raw_value:
         return None, unit
+
+    # Reject bibliographic artifacts before any numeric processing
+    if _BIBLIO_VALUE_RE.match(raw_value.strip()):
+        return None, None
 
     unit_lower = (unit or "").lower().strip()
     value_lower = raw_value.lower().strip()

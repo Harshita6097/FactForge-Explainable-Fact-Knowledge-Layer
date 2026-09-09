@@ -1,13 +1,13 @@
 import re
 from database.db import get_db
-from services.gemini_client import get_embedding
+from services.local_embedder import get_embedding
 from services.vector_store import search_similar
 from utils.logger import get_logger
 
 log = get_logger("qa_agent")
 
-_TOP_K = 12
-_SIMILARITY_THRESHOLD = 0.65
+_TOP_K = 30
+_SIMILARITY_THRESHOLD = 0.60
 
 # Keywords that indicate a meta question about relationships — answer from DB directly
 _META_KEYWORDS = [
@@ -107,10 +107,15 @@ def _answer_meta_question(question: str) -> dict:
     }
 
 
-def _retrieve_relevant_facts(question: str) -> list[dict]:
+def _retrieve_relevant_facts(
+    question: str,
+    project_id: str | None = None,
+    document_ids: list[str] | None = None,
+) -> list[dict]:
     """
     Retrieve relevant facts using FAISS semantic search.
-    No keyword fallback — relies entirely on semantic retrieval.
+    Scoped strictly to the provided document_ids when given,
+    otherwise to project_id, otherwise to ALL documents (no external knowledge).
     """
     try:
         embedding = get_embedding(question)
@@ -125,14 +130,35 @@ def _retrieve_relevant_facts(question: str) -> list[dict]:
 
     with get_db() as conn:
         placeholders = ",".join("?" * len(fact_ids))
-        facts = conn.execute(
-            f"""SELECT f.*, e.page_number, e.snippet, d.original_filename
-                FROM facts f
-                LEFT JOIN evidence e ON e.fact_id = f.id
-                LEFT JOIN documents d ON d.id = f.document_id
-                WHERE f.id IN ({placeholders})""",
-            fact_ids,
-        ).fetchall()
+        if document_ids:
+            doc_ph = ",".join("?" * len(document_ids))
+            facts = conn.execute(
+                f"""SELECT f.*, e.page_number, e.snippet, d.original_filename
+                    FROM facts f
+                    LEFT JOIN evidence e ON e.fact_id = f.id
+                    LEFT JOIN documents d ON d.id = f.document_id
+                    WHERE f.id IN ({placeholders})
+                      AND f.document_id IN ({doc_ph})""",
+                fact_ids + document_ids,
+            ).fetchall()
+        elif project_id:
+            facts = conn.execute(
+                f"""SELECT f.*, e.page_number, e.snippet, d.original_filename
+                    FROM facts f
+                    LEFT JOIN evidence e ON e.fact_id = f.id
+                    LEFT JOIN documents d ON d.id = f.document_id
+                    WHERE f.id IN ({placeholders}) AND d.project_id = ?""",
+                fact_ids + [project_id],
+            ).fetchall()
+        else:
+            facts = conn.execute(
+                f"""SELECT f.*, e.page_number, e.snippet, d.original_filename
+                    FROM facts f
+                    LEFT JOIN evidence e ON e.fact_id = f.id
+                    LEFT JOIN documents d ON d.id = f.document_id
+                    WHERE f.id IN ({placeholders})""",
+                fact_ids,
+            ).fetchall()
     return [dict(f) for f in facts]
 
 
@@ -244,18 +270,23 @@ def _parse_citations(answer: str, facts: list[dict]) -> list[dict]:
     return citations
 
 
-def answer_question(question: str) -> dict:
+def answer_question(
+    question: str,
+    project_id: str | None = None,
+    document_ids: list[str] | None = None,
+) -> dict:
     """
-    Main QA entry point. Queries the knowledge layer.
-    Returns {answer, citations, facts_used, has_answer, conflicts}.
+    Main QA entry point. Queries the knowledge layer, scoped to document_ids
+    when provided, otherwise project_id, otherwise all uploaded documents.
+    NEVER uses pre-trained knowledge — only facts extracted from uploaded PDFs.
     """
-    log.info("QA question: %s", question[:100])
+    log.info("QA question: %s | project=%s | doc_scope=%s",
+             question[:100], project_id, len(document_ids) if document_ids else "all")
 
-    # Meta questions about relationships answered directly from DB
     if _is_meta_question(question):
         return _answer_meta_question(question)
 
-    facts = _retrieve_relevant_facts(question)
+    facts = _retrieve_relevant_facts(question, project_id=project_id, document_ids=document_ids)
     log.info("Retrieved %d relevant facts", len(facts))
 
     if not facts:

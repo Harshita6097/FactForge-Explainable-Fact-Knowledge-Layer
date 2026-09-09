@@ -10,6 +10,7 @@ class DocumentResponse(BaseModel):
     status: str
     uploaded_at: str
     processed_at: Optional[str] = None
+    project_id: Optional[str] = None
 
 
 class PageContent(BaseModel):

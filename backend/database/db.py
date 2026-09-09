@@ -29,6 +29,22 @@ def get_db():
 def init_db():
     with get_db() as conn:
         conn.executescript("""
+            CREATE TABLE IF NOT EXISTS users (
+                id TEXT PRIMARY KEY,
+                email TEXT NOT NULL UNIQUE,
+                name TEXT NOT NULL,
+                hashed_password TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS projects (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                description TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+
             CREATE TABLE IF NOT EXISTS documents (
                 id TEXT PRIMARY KEY,
                 filename TEXT NOT NULL,
@@ -156,8 +172,37 @@ def init_db():
 
 def _migrate(conn):
     """Apply additive schema migrations to existing databases."""
-    existing = {row[1] for row in conn.execute("PRAGMA table_info(facts)").fetchall()}
-    if "canonical_unit" not in existing:
+    existing_facts = {row[1] for row in conn.execute("PRAGMA table_info(facts)").fetchall()}
+    if "canonical_unit" not in existing_facts:
         conn.execute("ALTER TABLE facts ADD COLUMN canonical_unit TEXT")
-    if "facts_count" not in {row[1] for row in conn.execute("PRAGMA table_info(documents)").fetchall()}:
-        pass  # placeholder for future document migrations
+
+    existing_docs = {row[1] for row in conn.execute("PRAGMA table_info(documents)").fetchall()}
+    if "project_id" not in existing_docs:
+        conn.execute("ALTER TABLE documents ADD COLUMN project_id TEXT")
+
+    existing_projects = {row[1] for row in conn.execute("PRAGMA table_info(projects)").fetchall()}
+    if "user_id" not in existing_projects:
+        conn.execute("ALTER TABLE projects ADD COLUMN user_id TEXT")
+
+    existing_chats = {row[1] for row in conn.execute("PRAGMA table_info(chat_sessions)").fetchall()}
+    if "project_id" not in existing_chats:
+        conn.execute("ALTER TABLE chat_sessions ADD COLUMN project_id TEXT")
+
+    existing_rels = {row[1] for row in conn.execute("PRAGMA table_info(relationships)").fetchall()}
+    if "reasoning_summary" not in existing_rels:
+        conn.execute("ALTER TABLE relationships ADD COLUMN reasoning_summary TEXT")
+
+    # Extraction failure log — facts flagged during mining for low confidence or parse issues
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS extraction_failures (
+            id TEXT PRIMARY KEY,
+            document_id TEXT NOT NULL,
+            page_number INTEGER,
+            raw_text TEXT NOT NULL,
+            failure_reason TEXT NOT NULL,
+            chain_of_thought TEXT,
+            confidence REAL DEFAULT 0.0,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY (document_id) REFERENCES documents(id)
+        )
+    """)

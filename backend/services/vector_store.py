@@ -31,10 +31,19 @@ def _load_index():
     if not FAISS_AVAILABLE:
         return
     if _INDEX_FILE.exists() and _META_FILE.exists():
-        _index = faiss.read_index(str(_INDEX_FILE))
-        with open(_META_FILE) as f:
-            _meta = json.load(f)
-        log.info("Loaded FAISS index: %d vectors", _index.ntotal)
+        loaded = faiss.read_index(str(_INDEX_FILE))
+        if loaded.d != _DIM:
+            log.warning("FAISS index dim mismatch (%d != %d) — rebuilding", loaded.d, _DIM)
+            _INDEX_FILE.unlink(missing_ok=True)
+            _META_FILE.unlink(missing_ok=True)
+            _index = faiss.IndexFlatIP(_DIM)
+            _meta = []
+            log.info("Created new FAISS index")
+        else:
+            _index = loaded
+            with open(_META_FILE) as f:
+                _meta = json.load(f)
+            log.info("Loaded FAISS index: %d vectors", _index.ntotal)
     else:
         _index = faiss.IndexFlatIP(_DIM)  # Inner product (cosine after normalizing)
         _meta = []

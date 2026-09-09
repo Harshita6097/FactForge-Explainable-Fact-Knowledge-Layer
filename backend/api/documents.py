@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-from fastapi import APIRouter, UploadFile, File, HTTPException, BackgroundTasks
+from fastapi import APIRouter, UploadFile, File, HTTPException, BackgroundTasks, Depends
 from fastapi.responses import JSONResponse
 
 from database.db import get_db
@@ -17,19 +17,20 @@ from services.knowledge_layer import build_canonical_facts_for_document
 from api.progress import update_progress, clear_progress
 from utils.config import get_settings
 from utils.logger import get_logger
+from utils.auth import get_current_user
 
 settings = get_settings()
 log = get_logger("documents_api")
 router = APIRouter()
 
 
-def _save_document_record(doc_id: str, filename: str, original_filename: str, page_count: int):
+def _save_document_record(doc_id: str, filename: str, original_filename: str, page_count: int, project_id: Optional[str] = None):
     with get_db() as conn:
         conn.execute(
-            """INSERT INTO documents (id, filename, original_filename, page_count, status, uploaded_at)
-               VALUES (?, ?, ?, ?, 'pending', ?)""",
+            """INSERT INTO documents (id, filename, original_filename, page_count, status, uploaded_at, project_id)
+               VALUES (?, ?, ?, ?, 'pending', ?, ?)""",
             (doc_id, filename, original_filename, page_count,
-             datetime.now(timezone.utc).isoformat()),
+             datetime.now(timezone.utc).isoformat(), project_id),
         )
 
 
@@ -103,9 +104,20 @@ def _process_document_background(doc_id: str, file_path: str):
 async def upload_document(
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
+    project_id: Optional[str] = None,
+    user: dict = Depends(get_current_user),
 ):
     if not file.filename or not file.filename.lower().endswith(".pdf"):
         raise HTTPException(status_code=400, detail="Only PDF files are accepted")
+
+    # Verify project belongs to user
+    if project_id:
+        with get_db() as conn:
+            proj = conn.execute(
+                "SELECT id FROM projects WHERE id=? AND user_id=?", (project_id, user["id"])
+            ).fetchone()
+            if not proj:
+                raise HTTPException(status_code=403, detail="Project not found")
 
     doc_id = str(uuid.uuid4())
     safe_name = f"{doc_id}.pdf"
@@ -130,7 +142,7 @@ async def upload_document(
         return DocumentResponse(**dict(row))
 
     log.info("Upload received: %s (%d pages)", file.filename, page_count)
-    _save_document_record(doc_id, safe_name, file.filename, page_count)
+    _save_document_record(doc_id, safe_name, file.filename, page_count, project_id)
     background_tasks.add_task(_process_document_background, doc_id, str(upload_path))
 
     with get_db() as conn:
@@ -140,27 +152,40 @@ async def upload_document(
 
 
 @router.get("/documents", response_model=list[DocumentResponse])
-def list_documents():
+def list_documents(project_id: Optional[str] = None, user: dict = Depends(get_current_user)):
     with get_db() as conn:
-        rows = conn.execute(
-            "SELECT * FROM documents ORDER BY uploaded_at DESC"
-        ).fetchall()
+        if project_id:
+            rows = conn.execute(
+                "SELECT * FROM documents WHERE project_id=? AND project_id IN (SELECT id FROM projects WHERE user_id=?) ORDER BY uploaded_at DESC",
+                (project_id, user["id"]),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT * FROM documents WHERE project_id IN (SELECT id FROM projects WHERE user_id=?) ORDER BY uploaded_at DESC",
+                (user["id"],),
+            ).fetchall()
     return [DocumentResponse(**dict(r)) for r in rows]
 
 
 @router.get("/documents/{doc_id}", response_model=DocumentResponse)
-def get_document(doc_id: str):
+def get_document(doc_id: str, user: dict = Depends(get_current_user)):
     with get_db() as conn:
-        row = conn.execute("SELECT * FROM documents WHERE id=?", (doc_id,)).fetchone()
+        row = conn.execute(
+            "SELECT * FROM documents WHERE id=? AND project_id IN (SELECT id FROM projects WHERE user_id=?)",
+            (doc_id, user["id"]),
+        ).fetchone()
     if not row:
         raise HTTPException(status_code=404, detail="Document not found")
     return DocumentResponse(**dict(row))
 
 
 @router.get("/documents/{doc_id}/status", response_model=ProcessingStatus)
-def get_document_status(doc_id: str):
+def get_document_status(doc_id: str, user: dict = Depends(get_current_user)):
     with get_db() as conn:
-        doc = conn.execute("SELECT * FROM documents WHERE id=?", (doc_id,)).fetchone()
+        doc = conn.execute(
+            "SELECT * FROM documents WHERE id=? AND project_id IN (SELECT id FROM projects WHERE user_id=?)",
+            (doc_id, user["id"]),
+        ).fetchone()
         if not doc:
             raise HTTPException(status_code=404, detail="Document not found")
         facts_count = conn.execute(
@@ -183,9 +208,12 @@ def get_document_status(doc_id: str):
 
 
 @router.get("/documents/{doc_id}/pages")
-def get_document_pages(doc_id: str):
+def get_document_pages(doc_id: str, user: dict = Depends(get_current_user)):
     with get_db() as conn:
-        doc = conn.execute("SELECT id FROM documents WHERE id=?", (doc_id,)).fetchone()
+        doc = conn.execute(
+            "SELECT id FROM documents WHERE id=? AND project_id IN (SELECT id FROM projects WHERE user_id=?)",
+            (doc_id, user["id"]),
+        ).fetchone()
         if not doc:
             raise HTTPException(status_code=404, detail="Document not found")
         pages = conn.execute(
@@ -196,9 +224,12 @@ def get_document_pages(doc_id: str):
 
 
 @router.delete("/documents/{doc_id}")
-def delete_document(doc_id: str):
+def delete_document(doc_id: str, user: dict = Depends(get_current_user)):
     with get_db() as conn:
-        doc = conn.execute("SELECT filename FROM documents WHERE id=?", (doc_id,)).fetchone()
+        doc = conn.execute(
+            "SELECT filename FROM documents WHERE id=? AND project_id IN (SELECT id FROM projects WHERE user_id=?)",
+            (doc_id, user["id"]),
+        ).fetchone()
         if not doc:
             raise HTTPException(status_code=404, detail="Document not found")
         # Delete in dependency order
@@ -219,10 +250,14 @@ def delete_document(doc_id: str):
         if fact_ids:
             for fid in fact_ids:
                 conn.execute(
-                    "DELETE FROM canonical_facts WHERE source_fact_ids LIKE ?",
-                    (f'%"{fid}"%',),
+                    """DELETE FROM canonical_facts
+                       WHERE EXISTS (
+                           SELECT 1 FROM json_each(source_fact_ids) WHERE value = ?
+                       )""",
+                    (fid,),
                 )
         conn.execute("DELETE FROM evidence WHERE document_id=?", (doc_id,))
+        conn.execute("DELETE FROM extraction_failures WHERE document_id=?", (doc_id,))
         conn.execute("DELETE FROM document_pages WHERE document_id=?", (doc_id,))
         conn.execute("DELETE FROM facts WHERE document_id=?", (doc_id,))
         conn.execute("DELETE FROM documents WHERE id=?", (doc_id,))

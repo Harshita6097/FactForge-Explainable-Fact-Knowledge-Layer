@@ -162,7 +162,6 @@ def build_canonical_facts_for_document(document_id: str) -> int:
 def _refresh_conflict_counts():
     """Recompute conflicting_count on all canonical facts from scratch."""
     with get_db() as conn:
-        # Reset all counts to 0 first
         conn.execute("UPDATE canonical_facts SET conflicting_count=0")
         contradictions = conn.execute(
             "SELECT r.source_fact_id, r.target_fact_id FROM relationships r "
@@ -172,8 +171,12 @@ def _refresh_conflict_counts():
         for rel in contradictions:
             for fact_id in [rel["source_fact_id"], rel["target_fact_id"]]:
                 cf = conn.execute(
-                    "SELECT id FROM canonical_facts WHERE source_fact_ids LIKE ?",
-                    (f'%"{fact_id}"%',),
+                    """SELECT id FROM canonical_facts
+                       WHERE EXISTS (
+                           SELECT 1 FROM json_each(source_fact_ids)
+                           WHERE value = ?
+                       )""",
+                    (fact_id,),
                 ).fetchone()
                 if cf and cf["id"] not in seen_cf:
                     conn.execute(
